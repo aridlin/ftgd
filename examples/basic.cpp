@@ -3,6 +3,14 @@
 
 #include <cstdio>
 
+static bool write_file(const char* path, const std::vector<uint8_t>& bytes) {
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    std::fwrite(bytes.data(), 1, bytes.size(), f);
+    std::fclose(f);
+    return true;
+}
+
 static ftgd::Image showcase_image() {
     ftgd::Image img;
     img.width = 360;
@@ -56,19 +64,18 @@ int main() {
     ftgd::text("URL: WEBSITE.COM/APPNAME/P.GIF");
     ftgd::text("SEND: S/P/1P  ->  WEBSITE.COM/APPNAME/1P.GIF");
     ftgd::image(showcase_image(), 360, 126);
-    ftgd::link("OPEN NEXT DASHBOARD PAGE", "1p", "turn p.gif into 1p.gif");
-    ftgd::command("RETURN HOME", "1p", "p", "turn 1p.gif back into p.gif");
-    ftgd::command("DEEP LINK", "p", "stats/cpu", "jump to nested dashboard pages");
+    ftgd::link("GO FORWARD", "1p", "turn p.gif into 1p.gif");
+    ftgd::link("GO BACK A LEVEL", "bp", "turn p.gif into bp.gif");
+    ftgd::command("OPEN CPU PANEL", "p", "cp", "turn p.gif into cp.gif");
     ftgd::end();
 
     std::vector<uint8_t> bytes = ftgd::gif();
-    FILE* f = std::fopen("build/basic.gif", "wb");
-    if (!f) return 1;
-    std::fwrite(bytes.data(), 1, bytes.size(), f);
-    std::fclose(f);
+    if (!write_file("build/p.gif", bytes)) return 1;
+    write_file("build/basic.gif", bytes);
 
     std::printf("url: %s\n", ftgd::url().c_str());
     std::printf("command: %s\n", ftgd::command_s("p", "1p").c_str());
+    std::printf("back command: %s\n", ftgd::command_s("p", "bp").c_str());
     std::printf("next page: %s\n", ftgd::apply_command("p", "s/p/1p").c_str());
     std::printf("gif bytes: %zu\n", bytes.size());
     ftgd::shutdown();
