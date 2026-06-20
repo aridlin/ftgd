@@ -688,42 +688,29 @@ static std::vector<uint8_t> lzw(const std::vector<uint8_t>& indices) {
     const int min_code_size = 8;
     const int clear = 1 << min_code_size;
     const int eoi = clear + 1;
+    BitWriter bw;
     int next = eoi + 1;
     int code_size = min_code_size + 1;
-    std::unordered_map<std::string, int> dict;
+    bool have_prev = false;
     auto reset = [&]() {
-        dict.clear();
-        for (int i = 0; i < clear; ++i) dict[std::string(1, static_cast<char>(i))] = i;
         next = eoi + 1;
         code_size = min_code_size + 1;
+        have_prev = false;
     };
-    BitWriter bw;
-    reset();
     bw.code(clear, code_size);
-    if (indices.empty()) {
-        bw.code(eoi, code_size);
-        bw.finish();
-        return bw.bytes;
-    }
-    std::string w(1, static_cast<char>(indices[0]));
-    for (size_t i = 1; i < indices.size(); ++i) {
-        char k = static_cast<char>(indices[i]);
-        std::string wk = w + k;
-        if (dict.find(wk) != dict.end()) {
-            w = wk;
-            continue;
-        }
-        bw.code(dict[w], code_size);
-        if (next < 4096) {
-            dict[wk] = next++;
-            if (next == (1 << code_size) && code_size < 12) ++code_size;
-        } else {
+    for (uint8_t index : indices) {
+        if (next >= 4096) {
             bw.code(clear, code_size);
             reset();
         }
-        w = std::string(1, k);
+        bw.code(index, code_size);
+        if (have_prev) {
+            ++next;
+            if (next == (1 << code_size) && code_size < 12) ++code_size;
+        } else {
+            have_prev = true;
+        }
     }
-    bw.code(dict[w], code_size);
     bw.code(eoi, code_size);
     bw.finish();
     return bw.bytes;
