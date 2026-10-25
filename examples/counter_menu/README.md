@@ -43,9 +43,9 @@ new collection; saved private URLs continue to work.
 2. **Settings:** choose a preset, unit, subject, amount and theme. Defaults are
    days, 0, `kiko shat himself`, yellow, the original technical note and
    `NO UPDATE NEEDED`. Presets preserve your subject and reset other fields.
-   `s/~/~.subject=kill` changes the heading to `DAYS SINCE KILL`.
-   `s/~/~.value=0.5` sets the number. Changing units keeps the number.
-3. **Notes:** use `s/~/~.note=TEXT` or `s/~/~.star=TEXT`. Underscores become
+   `s/~/-~.subject=kill` changes the heading to `DAYS SINCE KILL`.
+   `s/~/-~.value=0.5` sets the number. Changing units keeps the number.
+3. **Notes:** use `s/~/-~.note=TEXT` or `s/~/-~.star=TEXT`. Underscores become
    spaces; `EMPTY` clears a note. Every letter is entered normally, including `b`.
    Tildes in entered text stay literal; there is no character substitution. Limits: subject 80, note 180, star 32 characters.
    Encode `/`, `?`, `#`, and literal `%` as `%2F`, `%3F`, `%23`, and `%25`.
@@ -63,14 +63,16 @@ Return to it by sending it again after turning a menu message into a raw GIF.
 ## Cache and ownership model
 
 Every navigation destination is a distinct URL. Choices insert one character
-before the first `~`, while custom input is inserted after it. Entered letters
+before the first `~`. Custom edits insert a `-` before the marker and their
+text after it. This records edit order, so choosing a preset then entering an
+amount has a different immutable URL from doing those steps in reverse. Entered letters
 cannot steal the navigation replacement. A new input is applied to its source
 page once; later choices use the resulting state, so presets can override old
 input values. Pages commit their GIF, destinations and actions atomically.
 Repeated GET/HEAD requests do not duplicate saves or favourite changes.
 
-Menus use `/count/gifmenu/<collection>/v2/~.gif`. The versioned route and
-`pages_v2` table avoid conflicts with old immutable cached menus. Old `p.gif`
+Menus use `/count/gifmenu/<collection>/v3/~.gif`. The versioned route and
+`pages_v3` table avoid conflicts with old immutable cached menus. Old `p.gif`
 and `b.gif` entries (including v2) redirect to the new root; saved GIFs and favourites are
 shared with the previous version and their bytes are preserved. Collection
 secrets retain their reversible b-free alphabet.

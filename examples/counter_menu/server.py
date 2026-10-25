@@ -59,12 +59,14 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.base_url = base_url.rstrip('/')
+        if '~' in self.base_url:
+            raise ValueError('The public origin must not contain the navigation marker ~')
         self.renderer = renderer or ROOT / 'build/counter-menu'
         with self.connect() as db:
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS collections(id TEXT PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS pages_v2(
+                CREATE TABLE IF NOT EXISTS pages_v3(
                     collection TEXT, id TEXT, screen TEXT, config TEXT, action TEXT,
                     body BLOB, PRIMARY KEY(collection,id));
                 CREATE TABLE IF NOT EXISTS saved(
@@ -73,7 +75,7 @@ class Store:
                     created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             ''')
             # New navigation roots share the existing collections and saved GIFs.
-            db.execute("INSERT OR IGNORE INTO pages_v2 SELECT id,'~','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
+            db.execute("INSERT OR IGNORE INTO pages_v3 SELECT id,'~','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
 
     @contextmanager
     def connect(self):
@@ -87,12 +89,12 @@ class Store:
 
     def node(self, db, collection, screen, config, action=None, ident=None):
         if ident is None:
-            number = db.execute('SELECT count(*) FROM pages_v2 WHERE collection=?', (collection,)).fetchone()[0] + 1
+            number = db.execute('SELECT count(*) FROM pages_v3 WHERE collection=?', (collection,)).fetchone()[0] + 1
             ident = f'x{number}~'
-            while db.execute('SELECT 1 FROM pages_v2 WHERE collection=? AND id=?', (collection, ident)).fetchone():
+            while db.execute('SELECT 1 FROM pages_v3 WHERE collection=? AND id=?', (collection, ident)).fetchone():
                 number += 1
                 ident = f'x{number}~'
-        db.execute('INSERT OR IGNORE INTO pages_v2 VALUES(?,?,?,?,?,NULL)',
+        db.execute('INSERT OR IGNORE INTO pages_v3 VALUES(?,?,?,?,?,NULL)',
             (collection, ident, screen, json.dumps(config), json.dumps(action)))
         return ident
 
@@ -107,25 +109,25 @@ class Store:
         # Retain existing collection aliases. The navigation marker is ~,
         # before all free text, so every letter is available to user input.
         alias = collection.replace('b', 'g')
-        return f'{self.base_url}/count/gifmenu/{alias}/v2/{page}.gif'
+        return f'{self.base_url}/count/gifmenu/{alias}/v3/{page}.gif'
 
     def input_page(self, db, collection, token):
         # Inputs follow the first ~. Navigation always edits that first ~,
         # even when arbitrary entered text contains literal tildes.
-        match = re.fullmatch(r'([^~]*~)\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
+        match = re.fullmatch(r'([^~]*-)~\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
         if not match:
-            raise ValueError('Use s/~/~.subject=TEXT (or value, note, star). Encode dots as %2E.')
+            raise ValueError('Use s/~/-~.subject=TEXT (or value, note, star). Encode dots as %2E.')
         prefix, field, value, remaining = match.groups()
-        parent = prefix + remaining
+        parent = prefix[:-1] + '~' + remaining
         value = unquote(value)
-        old = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, parent)).fetchone()
+        old = db.execute('SELECT * FROM pages_v3 WHERE collection=? AND id=?', (collection, parent)).fetchone()
         if old is None:
             raise KeyError('Unknown source page')
         config = json.loads(old['config'])
         config[field] = '' if value == 'EMPTY' and field != 'value' else value.replace('_', ' ')
         config = validate(config)
         self.node(db, collection, 'settings' if field in ('value', 'subject') else 'notes', config, ident=token)
-        return db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, token)).fetchone()
+        return db.execute('SELECT * FROM pages_v3 WHERE collection=? AND id=?', (collection, token)).fetchone()
 
     def page(self, collection, token):
         if not re.fullmatch('[0-9a-f]{32}', collection) or len(token) > 4000:
@@ -136,7 +138,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM collections WHERE id=?', (collection,)).fetchone():
                 raise KeyError('Unknown collection')
-            row = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, token)).fetchone()
+            row = db.execute('SELECT * FROM pages_v3 WHERE collection=? AND id=?', (collection, token)).fetchone()
             if row is None and '.' in token:
                 row = self.input_page(db, collection, token)
             if row is None:
@@ -163,7 +165,7 @@ class Store:
                 action = dict(kind='view', id=action['id'])
             lines = self.menu(db, collection, token, screen, config, action)
             body = self.render_menu(collection, token, lines)
-            db.execute('UPDATE pages_v2 SET body=? WHERE collection=? AND id=?', (body, collection, token))
+            db.execute('UPDATE pages_v3 SET body=? WHERE collection=? AND id=?', (body, collection, token))
             return body
 
     def render_menu(self, collection, token, lines):
@@ -195,7 +197,7 @@ class Store:
                              ident=token.replace('~', choice+'~', 1))
             text(f's/~/{choice}~  {label}')
         def custom(field, placeholder):
-            text(f's/~/~.{field}={placeholder}')
+            text(f's/~/-~.{field}={placeholder}')
         def config_line():
             text(f"{config['value']} {config['unit']} since {config['subject']} | {config['theme']}")
         if screen == 'settings':
@@ -300,7 +302,7 @@ class Store:
                 if row is None:
                     raise KeyError('Unknown GIF')
                 return bytes(row['gif'])
-        if len(parts) == 4 and parts[0] == 'gifmenu' and parts[2] == 'v2' and parts[3].endswith('.gif'):
+        if len(parts) == 4 and parts[0] == 'gifmenu' and parts[2] == 'v3' and parts[3].endswith('.gif'):
             collection, token = parts[1].replace('g', 'b'), parts[3][:-4]
             return self.page(collection, token)
         # Keep permanent raw links from earlier menus working.
@@ -314,7 +316,7 @@ class Store:
 def handler_for(store):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b|v2/[0-9a-z]*b(?:\..*)?)\.gif', urlsplit(self.path).path)
+            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b|v2/~|v2/[0-9a-z]*b(?:\..*)?)\.gif', urlsplit(self.path).path)
             if legacy:
                 self.send_response(302)
                 self.send_header('Location', store.url(legacy.group(1).replace('g', 'b')))

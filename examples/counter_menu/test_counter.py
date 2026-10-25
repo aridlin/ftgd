@@ -57,7 +57,7 @@ class CounterTests(unittest.TestCase):
     def test_favourites_add_remove_ownership_and_raw_navigation(self):
         saved_token, saved = self.saved()
         with self.store.connect() as db:
-            raw_token = db.execute("SELECT id FROM pages_v2 WHERE collection=? AND screen='raw'", (self.collection,)).fetchone()['id']
+            raw_token = db.execute("SELECT id FROM pages_v3 WHERE collection=? AND screen='raw'", (self.collection,)).fetchone()['id']
         self.assertEqual(self.store.get(self.store.url(self.collection, raw_token)), saved['gif'])
         for value in (True, False):
             token = self.node('saved', action={'kind': 'favourite', 'id': saved['id'], 'value': value})
@@ -75,11 +75,11 @@ class CounterTests(unittest.TestCase):
 
     def test_custom_text_is_literal_validated_and_keeps_navigation(self):
         text = 'hello_world_%26_caf%C3%A9'
-        path = self.store.url(self.collection, f'~.note={text}')
+        path = self.store.url(self.collection, f'-~.note={text}')
         self.store.get(path)
         with self.store.connect() as db:
-            rows = db.execute("SELECT * FROM pages_v2 WHERE screen='notes'").fetchall()
-        self.assertTrue(all('~.note=' in r['id'] for r in rows))
+            rows = db.execute("SELECT * FROM pages_v3 WHERE screen='notes'").fetchall()
+        self.assertTrue(all('-~.note=' in r['id'] for r in rows))
         self.assertTrue(all(json.loads(r['config'])['note'] == 'hello world & café' for r in rows))
         for value in ('-1', 'NaN', 'inf', '1e99999', '1/2', '1;exit'):
             with self.assertRaises(ValueError):
@@ -92,9 +92,9 @@ class CounterTests(unittest.TestCase):
     def test_invalid_input_rolls_back_and_old_menu_is_immutable(self):
         original = self.store.page(self.collection, '~')
         with self.assertRaises(ValueError):
-            self.store.page(self.collection, '~.value=oops')
+            self.store.page(self.collection, '-~.value=oops')
         with self.store.connect() as db:
-            self.assertFalse(db.execute("SELECT 1 FROM pages_v2 WHERE id='~.value=oops'").fetchone())
+            self.assertFalse(db.execute("SELECT 1 FROM pages_v3 WHERE id='-~.value=oops'").fetchone())
         self.assertEqual(original, self.store.page(self.collection, '~'))
 
     def test_library_pagination(self):
@@ -132,7 +132,7 @@ class CounterTests(unittest.TestCase):
                     self.assertRegex(command, r'^s/~/[1-9a-z]~$')
 
     def test_b_in_note_does_not_break_following_commands(self):
-        token = '~.note=bob_brought_bread'
+        token = '-~.note=bob_brought_bread'
         self.store.page(self.collection, token)
         with self.store.connect() as db:
             lines = self.store.menu(db, self.collection, token, 'notes', dict(DEFAULTS,note='bob brought bread'), None)
@@ -144,15 +144,15 @@ class CounterTests(unittest.TestCase):
         self.assertIn('bob_brought_bread',target)
         self.store.get(target)
         with self.store.connect() as db:
-            row = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?',(self.collection,target.rsplit('/',1)[1][:-4])).fetchone()
+            row = db.execute('SELECT * FROM pages_v3 WHERE collection=? AND id=?',(self.collection,target.rsplit('/',1)[1][:-4])).fetchone()
         self.assertEqual(row['screen'],'preview')
         self.assertEqual(json.loads(row['config'])['note'],'bob brought bread')
 
     def test_multiple_inputs_and_navigation_use_first_tilde(self):
         url = self.store.url(self.collection)
-        commands = ['s/~/~.subject=bob_got_a_kill', 's/~/~.value=0.5',
-                    's/~/b~', 's/~/~.note=bob_brought_bread',
-                    's/~/~.star=BEST', 's/~/1~', 's/~/1~']
+        commands = ['s/~/-~.subject=bob_got_a_kill', 's/~/-~.value=0.5',
+                    's/~/b~', 's/~/-~.note=bob_brought_bread',
+                    's/~/-~.star=BEST', 's/~/1~', 's/~/1~']
         self.store.get(url)
         for command in commands:
             _,old,new = command.split('/')
@@ -166,25 +166,48 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(config['note'],'bob brought bread')
         self.assertEqual(config['star'],'BEST')
         # A preset reached after editing must override old input values.
-        url=self.store.url(self.collection,'~.value=0.5')
+        url=self.store.url(self.collection,'-~.value=0.5')
         self.store.get(url)
         url=url.replace('~','2~',1)
         self.store.get(url)
         with self.store.connect() as db:
-            config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
+            config=json.loads(db.execute('SELECT config FROM pages_v3 WHERE collection=? AND id=?',
                 (self.collection,urlsplit(url).path.rsplit('/',1)[1][:-4])).fetchone()[0])
         self.assertEqual(config['value'],'0')
         self.assertEqual(config['unit'],'hours')
 
     def test_all_letters_and_literal_tildes_are_preserved(self):
         for text,expected in [('babel','babel'), ('tower_of_babel','tower of babel'), ('%7E','~'), ('~a~el','~a~el'), ('abcdefghijklmnopqrstuvwxyz','abcdefghijklmnopqrstuvwxyz')]:
-            token='~.subject='+text
+            token='-~.subject='+text
             self.store.get(self.store.url(self.collection,token))
             with self.store.connect() as db:
-                config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
+                config=json.loads(db.execute('SELECT config FROM pages_v3 WHERE collection=? AND id=?',
                     (self.collection,token)).fetchone()[0])
             self.assertEqual(config['subject'],expected)
             self.store.get(self.store.url(self.collection,token).replace('~','b~',1))
+
+    def test_edit_and_navigation_histories_do_not_collide(self):
+        for reverse in (False, True):
+            collection = self.store.new_collection()
+            self.store.page(collection, '~')
+            self.store.page(collection, '2~')
+            self.store.page(collection, '-~.value=5')
+            paths = ['2-~.value=5', '-2~.value=5']
+            for token in reversed(paths) if reverse else paths:
+                self.store.page(collection, token)
+            with self.store.connect() as db:
+                for token, expected in zip(paths, ('5', '0')):
+                    config = json.loads(db.execute('SELECT config FROM pages_v3 WHERE collection=? AND id=?',
+                        (collection, token)).fetchone()[0])
+                    self.assertEqual(config['value'], expected)
+                    self.assertEqual(config['unit'], 'hours')
+            # Revisiting either immutable URL preserves its own state.
+            self.assertEqual(self.store.page(collection, paths[0]), self.store.page(collection, paths[0]))
+
+    def test_origin_cannot_contain_navigation_marker(self):
+        with self.assertRaisesRegex(ValueError, 'navigation marker'):
+            Store(Path(self.tmp.name)/'bad.sqlite3', 'https://example.test/~')
+        Store(Path(self.tmp.name)/'blue.sqlite3', 'https://blue.example')
 
     def test_subject_validation_and_old_configs(self):
         old=dict(DEFAULTS)
@@ -201,7 +224,7 @@ class CounterTests(unittest.TestCase):
     def test_old_collection_keeps_saved_images_and_gains_tilde_root(self):
         _,saved=self.saved()
         with self.store.connect() as db:
-            db.execute("DELETE FROM pages_v2 WHERE collection=? AND id='~'",(self.collection,))
+            db.execute("DELETE FROM pages_v3 WHERE collection=? AND id='~'",(self.collection,))
             self.store.node(db,self.collection,'settings',DEFAULTS,ident='p')
         migrated=Store(self.store.path,self.store.base_url)
         self.assertTrue(migrated.get(migrated.url(self.collection)).startswith(b'GIF'))
