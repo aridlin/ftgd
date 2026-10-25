@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie, CookieError
 from pathlib import Path
 import json
 import re
@@ -295,6 +296,27 @@ class Store:
 def handler_for(store):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if urlsplit(self.path).path == '/count/':
+                cookie = SimpleCookie()
+                try:
+                    cookie.load(self.headers.get('Cookie', ''))
+                except CookieError:
+                    cookie = SimpleCookie()
+                item = cookie.get('count_menu')
+                collection = item.value if item else ''
+                with store.connect() as db:
+                    exists = bool(re.fullmatch('[0-9a-f]{32}', collection) and
+                        db.execute('SELECT 1 FROM collections WHERE id=?', (collection,)).fetchone())
+                if not exists:
+                    collection = store.new_collection()
+                self.send_response(302)
+                self.send_header('Location', store.url(collection))
+                secure = '; Secure' if store.base_url.startswith('https://') else ''
+                self.send_header('Set-Cookie', f'count_menu={collection}; Path=/count/; Max-Age=31536000; HttpOnly; SameSite=Lax{secure}')
+                self.send_header('Cache-Control', 'private, no-store')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             if self.path == '/healthz':
                 body, status, kind = b'ok\n', 200, 'text/plain'
             else:

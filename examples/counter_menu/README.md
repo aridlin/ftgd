@@ -31,6 +31,12 @@ Do not use `make clean` against a database stored in `build/` that you want to k
 
 ## Use in Discord
 
+The public `/count/` entry opens a separate collection for each browser and
+remembers it in an HttpOnly cookie. It redirects to that collection's GIF URL;
+copy the resulting URL into Discord. The index can link to this entry without
+publishing anyone's private collection capability. Clearing cookies starts a
+new collection; saved private URLs continue to work.
+
 1. Send the private menu URL as your own message. Type one of the displayed
    `s/old.gif/new.gif` commands to edit your most recent message containing it.
 2. **Settings:** choose a preset, unit, amount and theme. Defaults are days, 0,
@@ -60,8 +66,8 @@ image URLs never change their bytes; creating a variation produces another GIF.
 
 The collection's 128-bit secret URL is its edit capability. Anyone with it can
 browse and modify that collection. Share `/count/g/<id>.gif` URLs to share only an
-image, and keep menu URLs private. There is no unauthenticated collection-list or
-web-based collection-creation endpoint. Requests are not logged by the app.
+image, and keep menu URLs private. There is no collection-list endpoint.
+Requests are not logged by the app.
 
 The FTGD renderer opts in to `FTGD_LOWERCASE_GLYPHS` so case-sensitive URLs and
 lowercase `s/` commands stay readable. Existing library output stays unchanged
