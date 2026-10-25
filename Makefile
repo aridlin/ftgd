@@ -20,3 +20,17 @@ test: build/smoke build/basic
 
 clean:
 	rm -rf build
+
+.PHONY: counter-menu counter-test
+counter-menu: build/counter-menu
+
+build/counter-menu: examples/counter_menu/menu.cpp ftgd.hpp | build
+	$(CXX) $(CXXFLAGS) examples/counter_menu/menu.cpp -o $@
+
+counter-test: build/counter-menu
+	python3 -m unittest discover -s examples/counter_menu -p 'test_*.py' -v
+
+.PHONY: codec-test
+codec-test: counter-menu build/basic
+	./build/basic
+	python3 -m unittest discover -s tests -p 'test_gif_codec.py' -v
