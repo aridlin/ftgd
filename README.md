@@ -52,8 +52,8 @@ int main() {
 ### Counter GIF menu app
 
 [`examples/counter_menu`](examples/counter_menu/README.md) is a complete hosted
-GIF menu: three configuration screens, a counter preview, persistent saved GIFs,
-and favourites. It uses Discord's `s/old/new` edits and stable image URLs, with
+GIF menu plus browser creator: configuration screens, animated counter previews,
+persistent saved GIFs, elapsed-time clocks, resets, search and favourites. It uses Discord's `s/old/new` edits and stable image URLs, with
 days/hours/microseconds presets and editable counter subjects. Build with `make counter-menu`; run its tests
 with `make counter-test`.
 
