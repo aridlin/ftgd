@@ -75,11 +75,11 @@ class CounterTests(unittest.TestCase):
 
     def test_custom_text_is_literal_validated_and_keeps_navigation(self):
         text = 'hello_world_%26_caf%C3%A9'
-        path = self.store.url(self.collection, f'b.note={text}')
+        path = self.store.url(self.collection, f'~.note={text}')
         self.store.get(path)
         with self.store.connect() as db:
             rows = db.execute("SELECT * FROM pages_v2 WHERE screen='notes'").fetchall()
-        self.assertTrue(all('b.note=' in r['id'] for r in rows))
+        self.assertTrue(all('~.note=' in r['id'] for r in rows))
         self.assertTrue(all(json.loads(r['config'])['note'] == 'hello world & café' for r in rows))
         for value in ('-1', 'NaN', 'inf', '1e99999', '1/2', '1;exit'):
             with self.assertRaises(ValueError):
@@ -90,12 +90,12 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(validate(dict(DEFAULTS, value='1.25'))['value'], '1.25')
 
     def test_invalid_input_rolls_back_and_old_menu_is_immutable(self):
-        original = self.store.page(self.collection, 'b')
+        original = self.store.page(self.collection, '~')
         with self.assertRaises(ValueError):
-            self.store.page(self.collection, 'b.value=oops')
+            self.store.page(self.collection, '~.value=oops')
         with self.store.connect() as db:
-            self.assertFalse(db.execute("SELECT 1 FROM pages_v2 WHERE id='b.value=oops'").fetchone())
-        self.assertEqual(original, self.store.page(self.collection, 'b'))
+            self.assertFalse(db.execute("SELECT 1 FROM pages_v2 WHERE id='~.value=oops'").fetchone())
+        self.assertEqual(original, self.store.page(self.collection, '~'))
 
     def test_library_pagination(self):
         gif = render_counter(DEFAULTS)
@@ -103,8 +103,8 @@ class CounterTests(unittest.TestCase):
             for index in range(8):
                 db.execute('INSERT INTO saved(id,collection,config,gif) VALUES(?,?,?,?)',
                     (f'{index:032x}', self.collection, json.dumps(DEFAULTS), gif))
-            first = self.store.menu(db, self.collection, 'b', 'library', DEFAULTS, None)
-            second = self.store.menu(db, self.collection, 'b', 'library', DEFAULTS, {'offset':6})
+            first = self.store.menu(db, self.collection, '~', 'library', DEFAULTS, None)
+            second = self.store.menu(db, self.collection, '~', 'library', DEFAULTS, {'offset':6})
         self.assertIn('NEXT PAGE', str(first))
         self.assertNotIn('NEXT PAGE', str(second))
         self.assertIn('PREVIOUS PAGE', str(second))
@@ -113,26 +113,26 @@ class CounterTests(unittest.TestCase):
         collection = 'ab'*16
         with self.store.connect() as db:
             db.execute('INSERT INTO collections VALUES(?)', (collection,))
-            self.store.node(db, collection, 'settings', DEFAULTS, ident='b')
+            self.store.node(db, collection, 'settings', DEFAULTS, ident='~')
         url = self.store.url(collection)
-        self.assertEqual(url.count('b'), 1)
-        for expected in ('1b', '11b', '111b'):
+        self.assertEqual(url.count('~'), 1)
+        for expected in ('1~', '11~', '111~'):
             self.store.get(url)
-            url = url.replace('b', '1b', 1)
+            url = url.replace('~', '1~', 1)
             self.assertTrue(url.endswith('/'+expected+'.gif'))
             image = Image.open(BytesIO(self.store.get(url)))
             image.load()
         with self.store.connect() as db:
-            lines = self.store.menu(db, collection, 'b', 'settings', DEFAULTS, None)
+            lines = self.store.menu(db, collection, '~', 'settings', DEFAULTS, None)
         for kind, line in lines:
             if kind == 'T' and line.startswith('s/'):
                 command = line.split('  ')[0]
                 self.assertNotIn('.gif', command)
                 if '.=' not in command and '.value=' not in command and '.subject=' not in command:
-                    self.assertRegex(command, r'^s/b/[1-9ac-z]b$')
+                    self.assertRegex(command, r'^s/~/[1-9a-z]~$')
 
     def test_b_in_note_does_not_break_following_commands(self):
-        token = 'b.note=bob_brought_bread'
+        token = '~.note=bob_brought_bread'
         self.store.page(self.collection, token)
         with self.store.connect() as db:
             lines = self.store.menu(db, self.collection, token, 'notes', dict(DEFAULTS,note='bob brought bread'), None)
@@ -140,7 +140,7 @@ class CounterTests(unittest.TestCase):
         _, old, new = command.split('/')
         url = self.store.url(self.collection,token)
         target = url.replace(old,new,1)
-        self.assertEqual(command, 's/b/1b')
+        self.assertEqual(command, 's/~/1~')
         self.assertIn('bob_brought_bread',target)
         self.store.get(target)
         with self.store.connect() as db:
@@ -148,11 +148,11 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(row['screen'],'preview')
         self.assertEqual(json.loads(row['config'])['note'],'bob brought bread')
 
-    def test_multiple_inputs_and_navigation_use_first_b(self):
+    def test_multiple_inputs_and_navigation_use_first_tilde(self):
         url = self.store.url(self.collection)
-        commands = ['s/b/b.subject=bob_got_a_kill', 's/b/b.value=0.5',
-                    's/b/cb', 's/b/b.note=bob_brought_bread',
-                    's/b/b.star=BEST', 's/b/1b', 's/b/1b']
+        commands = ['s/~/~.subject=bob_got_a_kill', 's/~/~.value=0.5',
+                    's/~/b~', 's/~/~.note=bob_brought_bread',
+                    's/~/~.star=BEST', 's/~/1~', 's/~/1~']
         self.store.get(url)
         for command in commands:
             _,old,new = command.split('/')
@@ -166,9 +166,9 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(config['note'],'bob brought bread')
         self.assertEqual(config['star'],'BEST')
         # A preset reached after editing must override old input values.
-        url=self.store.url(self.collection,'b.value=0.5')
+        url=self.store.url(self.collection,'~.value=0.5')
         self.store.get(url)
-        url=url.replace('b','2b',1)
+        url=url.replace('~','2~',1)
         self.store.get(url)
         with self.store.connect() as db:
             config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
@@ -176,15 +176,15 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(config['value'],'0')
         self.assertEqual(config['unit'],'hours')
 
-    def test_tilde_input_shortcut_and_literal_tilde(self):
-        for text,expected in [('~a~el','babel'), ('tower_of_~a~el','tower of babel'), ('%7E','~'), ('bob','bob')]:
-            token='b.subject='+text
+    def test_all_letters_and_literal_tildes_are_preserved(self):
+        for text,expected in [('babel','babel'), ('tower_of_babel','tower of babel'), ('%7E','~'), ('~a~el','~a~el'), ('abcdefghijklmnopqrstuvwxyz','abcdefghijklmnopqrstuvwxyz')]:
+            token='~.subject='+text
             self.store.get(self.store.url(self.collection,token))
             with self.store.connect() as db:
                 config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
                     (self.collection,token)).fetchone()[0])
             self.assertEqual(config['subject'],expected)
-            self.store.get(self.store.url(self.collection,token).replace('b','cb',1))
+            self.store.get(self.store.url(self.collection,token).replace('~','b~',1))
 
     def test_subject_validation_and_old_configs(self):
         old=dict(DEFAULTS)
@@ -198,10 +198,10 @@ class CounterTests(unittest.TestCase):
             image.load()
             self.assertEqual(image.size,(1200,720))
 
-    def test_old_collection_keeps_saved_images_and_gains_b_root(self):
+    def test_old_collection_keeps_saved_images_and_gains_tilde_root(self):
         _,saved=self.saved()
         with self.store.connect() as db:
-            db.execute("DELETE FROM pages_v2 WHERE collection=? AND id='b'",(self.collection,))
+            db.execute("DELETE FROM pages_v2 WHERE collection=? AND id='~'",(self.collection,))
             self.store.node(db,self.collection,'settings',DEFAULTS,ident='p')
         migrated=Store(self.store.path,self.store.base_url)
         self.assertTrue(migrated.get(migrated.url(self.collection)).startswith(b'GIF'))

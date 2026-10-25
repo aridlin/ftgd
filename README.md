@@ -76,7 +76,7 @@ applications use a TrueType rasterizer without depending on the built-in font.
 The counter example uses Pillow/DejaVu Sans for landscape menu cards, then FTGD
 for GIF encoding. This optional example does not add a library dependency.
 
-`ftgd::append_command("1", "b")` returns `s/b/1b`. Put the marker before any
+`ftgd::append_command("1")` returns `s/~/1~`. Put the marker before any
 user-entered text and keep the URL before it free of the marker. The replacement
 retains the marker for the next command. The helper rejects empty markers,
 slashes, and choices containing the marker; it does not validate the host URL.

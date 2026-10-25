@@ -180,7 +180,7 @@ std::string page_from_url(const std::string& url_value, const Config& cfg = {});
 // Encode an externally rasterized image (e.g. TrueType text) without bitmap widgets.
 std::vector<uint8_t> encode_image(const Image& image);
 // Insert a choice before the first marker, retaining it for the next edit.
-std::string append_command(const std::string& choice, const std::string& marker = "b");
+std::string append_command(const std::string& choice, const std::string& marker = "~");
 Image load_ppm(const char* path);
 Image image_from_rgba(int width, int height, const uint8_t* rgba);
 Image checker_image(int width, int height, Color a, Color b, int cell = 12);

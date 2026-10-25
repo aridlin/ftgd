@@ -73,7 +73,7 @@ class Store:
                     created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             ''')
             # New navigation roots share the existing collections and saved GIFs.
-            db.execute("INSERT OR IGNORE INTO pages_v2 SELECT id,'b','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
+            db.execute("INSERT OR IGNORE INTO pages_v2 SELECT id,'~','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
 
     @contextmanager
     def connect(self):
@@ -88,10 +88,10 @@ class Store:
     def node(self, db, collection, screen, config, action=None, ident=None):
         if ident is None:
             number = db.execute('SELECT count(*) FROM pages_v2 WHERE collection=?', (collection,)).fetchone()[0] + 1
-            ident = f'x{number}b'
+            ident = f'x{number}~'
             while db.execute('SELECT 1 FROM pages_v2 WHERE collection=? AND id=?', (collection, ident)).fetchone():
                 number += 1
-                ident = f'x{number}b'
+                ident = f'x{number}~'
         db.execute('INSERT OR IGNORE INTO pages_v2 VALUES(?,?,?,?,?,NULL)',
             (collection, ident, screen, json.dumps(config), json.dumps(action)))
         return ident
@@ -100,26 +100,24 @@ class Store:
         collection = secrets.token_hex(16)
         with self.connect() as db:
             db.execute('INSERT INTO collections VALUES(?)', (collection,))
-            self.node(db, collection, 'settings', DEFAULTS, ident='b')
+            self.node(db, collection, 'settings', DEFAULTS, ident='~')
         return collection
 
-    def url(self, collection, page='b'):
-        # The entire URL before the page marker must be free of lowercase b:
-        # Discord replaces the first occurrence in the message, not just its path.
+    def url(self, collection, page='~'):
+        # Retain existing collection aliases. The navigation marker is ~,
+        # before all free text, so every letter is available to user input.
         alias = collection.replace('b', 'g')
         return f'{self.base_url}/count/gifmenu/{alias}/v2/{page}.gif'
 
     def input_page(self, db, collection, token):
-        # Inputs follow the first b. Navigation always edits that first b,
-        # even when arbitrary entered text contains more b characters.
-        match = re.fullmatch(r'([^b]*b)\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
+        # Inputs follow the first ~. Navigation always edits that first ~,
+        # even when arbitrary entered text contains literal tildes.
+        match = re.fullmatch(r'([^~]*~)\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
         if not match:
-            raise ValueError('Use s/b/b.subject=TEXT (or value, note, star). Encode dots as %2E.')
+            raise ValueError('Use s/~/~.subject=TEXT (or value, note, star). Encode dots as %2E.')
         prefix, field, value, remaining = match.groups()
         parent = prefix + remaining
-        # Translate the typing shortcut before URL decoding, so %7E remains
-        # available when a literal tilde is wanted.
-        value = unquote(value.replace('~', 'b'))
+        value = unquote(value)
         old = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, parent)).fetchone()
         if old is None:
             raise KeyError('Unknown source page')
@@ -188,16 +186,16 @@ class Store:
             lines.append(('T', value))
         def heading(value):
             lines.append(('H', value))
-        choices = iter('123456789acdefghijklmnoqrstuvwxyz')
+        choices = iter('123456789abcdefghijklmnopqrstuvwxyz')
         def panel(title):
             lines.append(('P', title))
         def link(label, target, cfg=None, act=None):
             choice = next(choices)
             dest = self.node(db, collection, target, cfg or config, act,
-                             ident=token.replace('b', choice+'b', 1))
-            text(f's/b/{choice}b  {label}')
+                             ident=token.replace('~', choice+'~', 1))
+            text(f's/~/{choice}~  {label}')
         def custom(field, placeholder):
-            text(f's/b/b.{field}={placeholder}')
+            text(f's/~/~.{field}={placeholder}')
         def config_line():
             text(f"{config['value']} {config['unit']} since {config['subject']} | {config['theme']}")
         if screen == 'settings':
@@ -289,7 +287,7 @@ class Store:
             link('MAKE A VARIATION', 'settings')
         else:
             raise ValueError('Unknown screen')
-        lines.append(('F', 'Type a command in Discord • TEXT: _ = space; ~ = b; encode / ? # % as URL escapes'))
+        lines.append(('F', 'Type a command in Discord • TEXT: _ = space; letters are unchanged; encode / ? # % as URL escapes'))
         return lines
 
     def get(self, path):
@@ -316,7 +314,7 @@ class Store:
 def handler_for(store):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b)\.gif', urlsplit(self.path).path)
+            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b|v2/[0-9a-z]*b(?:\..*)?)\.gif', urlsplit(self.path).path)
             if legacy:
                 self.send_response(302)
                 self.send_header('Location', store.url(legacy.group(1).replace('g', 'b')))

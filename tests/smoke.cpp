@@ -26,9 +26,9 @@ int main() {
     assert(ftgd::apply_commands("p", {"s/p/1p", "s/1p/11p"}) == "11p");
     assert(ftgd::page_from_url("https://website.com/appname/1p.gif", cfg) == "1p");
 
-    assert(ftgd::append_command("1") == "s/b/1b");
+    assert(ftgd::append_command("1") == "s/~/1~");
     assert(ftgd::append_command("1", "~") == "s/~/1~");
-    assert(ftgd::append_command("b").empty());
+    assert(ftgd::append_command("~").empty());
     assert(ftgd::append_command("1", "").empty());
     assert(ftgd::encode_image({}).empty());
     auto image_gif = ftgd::encode_image(ftgd::checker_image(32, 32, {0,0,0,255}, {255,255,255,255}));
