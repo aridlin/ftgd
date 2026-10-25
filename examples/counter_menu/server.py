@@ -154,7 +154,13 @@ class Store(LiveStore):
                 raise KeyError('Unknown page')
             cached = db.execute('SELECT body FROM snapshots WHERE collection=? AND token=? AND seed=?',(collection,token,seed)).fetchone()
             if cached is not None: return bytes(cached['body'])
-            config, action = validate(json.loads(row['config'])), json.loads(row['action'])
+            action = json.loads(row['action'])
+            source_config = json.loads(row['config'])
+            if action and action.get('kind') in ('view','favourite','reset'):
+                source = db.execute('SELECT config FROM saved WHERE collection=? AND id=?',(collection,action['id'])).fetchone()
+                if source is None: raise KeyError('Unknown saved GIF')
+                source_config = json.loads(source['config'])
+            config = validate(source_config)
             screen = row['screen']
             if screen == 'raw':
                 saved = db.execute('SELECT * FROM saved WHERE collection=? AND id=?', (collection, action['id'])).fetchone()
@@ -198,6 +204,11 @@ class Store(LiveStore):
         return packed.getvalue()
 
     def menu(self, db, collection, token, screen, config, action):
+        navigation_config = config
+        if screen == 'saved' and action and action.get('id'):
+            source = db.execute('SELECT config FROM saved WHERE collection=? AND id=?',(collection,action['id'])).fetchone()
+            if source is None: raise KeyError('Unknown saved GIF')
+            navigation_config = validate(json.loads(source['config']))
         lines = []
         def text(value):
             lines.append(('T', value))
@@ -221,10 +232,10 @@ class Store(LiveStore):
                 dest=token.replace('~',choice+'~',1)
                 old=db.execute('SELECT * FROM pages_live WHERE collection=? AND id=?',(collection,dest)).fetchone()
                 same_action = old is not None and json.loads(old['action']) == act
-                same_config = old is not None and json.loads(old['config']) == (cfg or config)
+                same_config = old is not None and json.loads(old['config']) == (cfg or navigation_config)
                 if old is None or (old['screen']==target and same_action and
                     (same_config or (act and act.get('kind')!='save'))):
-                    self.node(db,collection,target,cfg or config,act,ident=dest)
+                    self.node(db,collection,target,cfg or navigation_config,act,ident=dest)
                     break
             text(f's/~/{choice}~  {label}')
         def custom(field, placeholder):
@@ -295,7 +306,7 @@ class Store(LiveStore):
                 if rows.index(row) == 3:
                     panel('MORE GIFS')
                 label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} since {item.get('subject', DEFAULTS['subject'])}"
-                link(label, 'saved', item, dict(kind='view', id=row['id']))
+                link(label, 'saved', validate(json.loads(row['config'])), dict(kind='view', id=row['id']))
             panel('BROWSE & CREATE')
             if offset:
                 link('PREVIOUS PAGE', screen, act=dict(offset=max(0, offset-6)))

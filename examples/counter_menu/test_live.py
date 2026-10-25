@@ -96,6 +96,35 @@ class LiveTests(unittest.TestCase):
         ids={a['id'] for a in actions if a and a['kind']=='view'}
         self.assertIn(first['id'],ids);self.assertIn(second['id'],ids)
 
+    def test_search_decodes_unicode_text(self):
+        item=self.store.api_action(self.collection,dict(action='create',key='unicode-search',
+            config=dict(DEFAULTS,mode='static',subject='Café Żółw',note='Zażółć gęślą jaźń')))
+        for query in ('CAFÉ','żółw','GĘŚLĄ'):
+            self.assertEqual([r['id'] for r in self.store.api_get(self.collection,query)['items']],[item['id']])
+        self.assertEqual(self.store.api_get(self.collection,'missing')['items'],[])
+
+    def test_old_microsecond_counter_can_open_navigate_and_reset(self):
+        item=self.create(unit='microseconds',value='0')
+        self.now+=20*86400
+        elapsed=current_config(self.row(item['id']),self.now)
+        self.assertGreater(len(elapsed['value'].split('.')[0]),12)
+        with self.store.connect() as db:
+            library=self.store.node(db,self.collection,'library',DEFAULTS)
+            # Also exercise a previously cached invalid destination configuration.
+            old=self.store.node(db,self.collection,'saved',elapsed,{'kind':'view','id':item['id']})
+        self.store.page(self.collection,library)
+        self.store.page(self.collection,old)
+        with self.store.connect() as db:
+            targets=[dict(r) for r in db.execute('SELECT * FROM pages_live WHERE collection=? AND id!=? AND screen IN (?,?,?)',
+                (self.collection,old,'saved','raw','settings'))]
+        for target in targets:
+            action=json.loads(target['action'])
+            if not action or action.get('kind') not in ('reset','favourite'):
+                self.store.page(self.collection,target['id'])
+        reset=next(t for t in targets if json.loads(t['action'] or 'null') and json.loads(t['action']).get('kind')=='reset')
+        self.store.page(self.collection,reset['id'])
+        self.assertEqual(current_config(self.row(item['id']),self.now)['value'],'0')
+
     def test_browser_html_discord_gif_and_api(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler_for(self.store))
         thread=Thread(target=server.serve_forever,daemon=True);thread.start()

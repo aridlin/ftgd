@@ -77,7 +77,7 @@ class LiveStore:
             if not db.execute('SELECT 1 FROM collections WHERE id=?',(collection,)).fetchone():
                 raise KeyError('Unknown collection')
             rows=db.execute('SELECT * FROM saved WHERE collection=? ORDER BY created DESC,rowid DESC',(collection,)).fetchall()
-            items=[self.item(r) for r in rows if (not favourites or r['favourite']) and query.casefold() in r['config'].casefold()]
+            items=[self.item(r) for r in rows if (not favourites or r['favourite']) and query.casefold() in ' '.join(str(value) for value in json.loads(r['config']).values()).casefold()]
         return dict(items=items, now=self.clock(),menu=self.url(collection), defaults=self.defaults,presets=self.presets)
 
     def api_action(self, collection, payload):
