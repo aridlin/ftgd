@@ -1,5 +1,8 @@
 """Render the counter artwork as a static GIF. No shell commands or remote assets."""
 from io import BytesIO
+from functools import lru_cache
+from threading import BoundedSemaphore
+RENDER_SLOTS = BoundedSemaphore(2)
 from math import cos, sin, pi
 from pathlib import Path
 import json
@@ -7,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONT_DIR = Path('/usr/share/fonts/TTF')
 
+@lru_cache(maxsize=128)
 def font(size, bold=False):
     name = 'DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf'
     for folder in (FONT_DIR, Path('/usr/share/fonts/truetype/dejavu')):
@@ -51,7 +55,7 @@ def fit_text(draw, text, box, max_size, bold=False, centered=False):
         draw.text((px, y), line, font=face, fill='#151515')
         y += size + 7
 
-def render_counter(config, fried=True):
+def counter_frame(config, fried=True, phase=0):
     bg, edge, accent, paper = THEMES[config['theme']]
     im = Image.new('RGB', (1200, 720), bg)
     d = ImageDraw.Draw(im)
@@ -85,18 +89,20 @@ def render_counter(config, fried=True):
     # Deliberately old-school clock and Word-style starburst.
     d.ellipse((420, 513, 552, 645), fill=edge, outline='#151515', width=3)
     d.ellipse((433, 526, 539, 632), fill='white', outline='#151515', width=2)
-    d.line((486, 542, 486, 579, 515, 593), fill='#151515', width=6)
+    angle = phase * 2*pi - pi/2
+    d.line((486+37*cos(angle),579+37*sin(angle),486,579,486+29*cos(angle/12+.5),579+29*sin(angle/12+.5)), fill='#151515', width=6)
     d.ellipse((480, 573, 492, 585), fill='#ff3333')
     for cx, cy, radius in ((85, 125, 36), (1110, 100, 30), (1034, 590, 88)):
         points = []
         count = 12 if radius == 88 else 5
         for i in range(count*2):
             r = radius if i % 2 == 0 else radius * .64
-            angle = i*pi/count - pi/2
+            angle = i*pi/count - pi/2 + (phase*2*pi/5 if radius != 88 else .07*sin(phase*2*pi))
             points.append((cx+r*cos(angle), cy+r*sin(angle)))
         d.polygon(points, fill=accent, outline=edge, width=3)
     fit_text(d, config['star'], (972, 563, 124, 66), 22, bold=True, centered=True)
-    d.text((590, 624), 'STILL STATIC. OBVIOUSLY.', font=font(20), fill=edge)
+    caption = 'COUNTING. REFRESH FOR THE LATEST.' if config.get('mode') == 'counting' else 'STILL STATIC. OBVIOUSLY.'
+    d.text((590, 624), caption, font=font(18), fill=edge)
     if fried:
         heavy, light = BytesIO(), BytesIO()
         im.resize((600, 360)).save(heavy, 'JPEG', quality=3, subsampling=2)
@@ -107,8 +113,27 @@ def render_counter(config, fried=True):
         im.paste(readable.crop((555, 262, 1098, 551)), (555, 262))
         # The configurable star note also needs to stay legible.
         im.paste(readable.crop((965, 557, 1103, 635)), (965, 557))
+    return im
+
+def render_counter(config, fried=True, animated=False):
+    with RENDER_SLOTS:
+        return _render_counter(config, fried, animated)
+
+def _render_counter(config, fried=True, animated=False):
+    base = counter_frame(config, fried, 0)
+    frames = [base]
+    if animated:
+        for i in range(1,12):
+            moved = counter_frame(config, fried, i/12)
+            frame = base.copy()
+            for box in ((40,80,130,170),(1070,60,1150,140),(418,510,555,648),(943,499,1125,685)):
+                frame.paste(moved.crop(box),box[:2])
+            frames.append(frame)
+    palette = base.quantize(colors=64, dither=Image.Dither.NONE)
+    frames = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in frames]
     output = BytesIO()
-    im.quantize(colors=64, dither=Image.Dither.NONE).save(output, 'GIF', optimize=True)
+    frames[0].save(output, 'GIF', save_all=animated, append_images=frames[1:],
+                   duration=250, loop=0, disposal=1, optimize=True)
     return output.getvalue()
 
 def render_menu_image(lines):
