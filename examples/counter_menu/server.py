@@ -20,18 +20,20 @@ from render import render_counter, THEMES, render_menu_image
 
 ROOT = Path(__file__).resolve().parents[2]
 UNITS = ('days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds')
-DEFAULTS = dict(unit='days', value='0', theme='yellow',
+DEFAULTS = dict(subject='kiko shat himself', unit='days', value='0', theme='yellow',
     note='this is a static image so we can save resources, there is no need for a live update because kiko shits himself every day',
     star='NO UPDATE NEEDED')
 PRESETS = {
     'days': DEFAULTS,
-    'hours': dict(unit='hours', value='0', theme='blue',
+    'hours': dict(subject=DEFAULTS['subject'], unit='hours', value='0', theme='blue',
         note='huh well i guess we gotta shorten it even more for it to indicate anything. Still static though', star='NOW IN HOURS!'),
-    'microseconds': dict(unit='microseconds', value='1', theme='purple',
+    'microseconds': dict(subject=DEFAULTS['subject'], unit='microseconds', value='1', theme='purple',
         note='wow that was a while', star='NEW RECORD!'),
 }
 
 def validate(config):
+    config = dict(config)
+    config.setdefault('subject', DEFAULTS['subject'])
     if set(config) != set(DEFAULTS):
         raise ValueError('Invalid counter fields')
     if config['unit'] not in UNITS or config['theme'] not in THEMES:
@@ -44,10 +46,12 @@ def validate(config):
             raise ValueError('Invalid value')
     except InvalidOperation:
         raise ValueError('Invalid value') from None
-    for field, limit in (('note', 180), ('star', 32)):
+    for field, limit in (('note', 180), ('star', 32), ('subject', 80)):
         text = config[field]
         if not isinstance(text, str) or len(text) > limit or any(ord(c) < 32 or ord(c) == 127 for c in text):
             raise ValueError(f'{field}: maximum {limit} characters, no control characters')
+    if not config['subject'].strip():
+        raise ValueError('Subject cannot be empty')
     return dict(config, value=value)
 
 class Store:
@@ -60,7 +64,7 @@ class Store:
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS collections(id TEXT PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS pages(
+                CREATE TABLE IF NOT EXISTS pages_v2(
                     collection TEXT, id TEXT, screen TEXT, config TEXT, action TEXT,
                     body BLOB, PRIMARY KEY(collection,id));
                 CREATE TABLE IF NOT EXISTS saved(
@@ -69,7 +73,7 @@ class Store:
                     created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             ''')
             # New navigation roots share the existing collections and saved GIFs.
-            db.execute("INSERT OR IGNORE INTO pages SELECT id,'b','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
+            db.execute("INSERT OR IGNORE INTO pages_v2 SELECT id,'b','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
 
     @contextmanager
     def connect(self):
@@ -83,12 +87,12 @@ class Store:
 
     def node(self, db, collection, screen, config, action=None, ident=None):
         if ident is None:
-            number = db.execute('SELECT count(*) FROM pages WHERE collection=?', (collection,)).fetchone()[0] + 1
+            number = db.execute('SELECT count(*) FROM pages_v2 WHERE collection=?', (collection,)).fetchone()[0] + 1
             ident = f'x{number}b'
-            while db.execute('SELECT 1 FROM pages WHERE collection=? AND id=?', (collection, ident)).fetchone():
+            while db.execute('SELECT 1 FROM pages_v2 WHERE collection=? AND id=?', (collection, ident)).fetchone():
                 number += 1
                 ident = f'x{number}b'
-        db.execute('INSERT OR IGNORE INTO pages VALUES(?,?,?,?,?,NULL)',
+        db.execute('INSERT OR IGNORE INTO pages_v2 VALUES(?,?,?,?,?,NULL)',
             (collection, ident, screen, json.dumps(config), json.dumps(action)))
         return ident
 
@@ -103,27 +107,30 @@ class Store:
         # The entire URL before the page marker must be free of lowercase b:
         # Discord replaces the first occurrence in the message, not just its path.
         alias = collection.replace('b', 'g')
-        return f'{self.base_url}/count/gifmenu/{alias}/{page}.gif'
+        return f'{self.base_url}/count/gifmenu/{alias}/v2/{page}.gif'
 
     def input_page(self, db, collection, token):
-        match = re.fullmatch(r'(.*)~([vnt])~([^~]*)~~b', token)
+        # Inputs follow the first b. Navigation always edits that first b,
+        # even when arbitrary entered text contains more b characters.
+        match = re.fullmatch(r'([^b]*b)\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
         if not match:
-            raise ValueError('Use the displayed input format, ending in ~~b')
-        prefix, field, value = match.groups()
-        parent = prefix + 'b'
-        field = {'v':'value', 'n':'note', 't':'star'}[field]
-        value = unquote(value)
-        old = db.execute('SELECT * FROM pages WHERE collection=? AND id=?', (collection, parent)).fetchone()
+            raise ValueError('Use s/b/b.subject=TEXT (or value, note, star). Encode dots as %2E.')
+        prefix, field, value, remaining = match.groups()
+        parent = prefix + remaining
+        # Translate the typing shortcut before URL decoding, so %7E remains
+        # available when a literal tilde is wanted.
+        value = unquote(value.replace('~', 'b'))
+        old = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, parent)).fetchone()
         if old is None:
             raise KeyError('Unknown source page')
         config = json.loads(old['config'])
         config[field] = '' if value == 'EMPTY' and field != 'value' else value.replace('_', ' ')
         config = validate(config)
-        self.node(db, collection, 'settings' if field == 'value' else 'notes', config, ident=token)
-        return db.execute('SELECT * FROM pages WHERE collection=? AND id=?', (collection, token)).fetchone()
+        self.node(db, collection, 'settings' if field in ('value', 'subject') else 'notes', config, ident=token)
+        return db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, token)).fetchone()
 
     def page(self, collection, token):
-        if not re.fullmatch('[0-9a-f]{32}', collection) or len(token) > 700:
+        if not re.fullmatch('[0-9a-f]{32}', collection) or len(token) > 4000:
             raise ValueError('Invalid menu address')
         with self.connect() as db:
             # Actions, their result GIF and all destination tokens commit together.
@@ -131,14 +138,14 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM collections WHERE id=?', (collection,)).fetchone():
                 raise KeyError('Unknown collection')
-            row = db.execute('SELECT * FROM pages WHERE collection=? AND id=?', (collection, token)).fetchone()
-            if row is None and '~' in token:
+            row = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?', (collection, token)).fetchone()
+            if row is None and '.' in token:
                 row = self.input_page(db, collection, token)
             if row is None:
                 raise KeyError('Unknown page')
             if row['body'] is not None:
                 return bytes(row['body'])
-            config, action = json.loads(row['config']), json.loads(row['action'])
+            config, action = validate(json.loads(row['config'])), json.loads(row['action'])
             screen = row['screen']
             if screen == 'raw':
                 saved = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (collection, action['id'])).fetchone()
@@ -158,7 +165,7 @@ class Store:
                 action = dict(kind='view', id=action['id'])
             lines = self.menu(db, collection, token, screen, config, action)
             body = self.render_menu(collection, token, lines)
-            db.execute('UPDATE pages SET body=? WHERE collection=? AND id=?', (body, collection, token))
+            db.execute('UPDATE pages_v2 SET body=? WHERE collection=? AND id=?', (body, collection, token))
             return body
 
     def render_menu(self, collection, token, lines):
@@ -169,11 +176,10 @@ class Store:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True)
         if not result.stdout.startswith(b'GIF89a'):
             raise RuntimeError('Menu renderer did not return a GIF')
-        # FTGD's dependency-free encoder is deliberately simple. Repack its
-        # exact pixels using Pillow's LZW compression for Discord-sized menus.
+        # A small palette keeps antialiasing while reducing transfer size.
         packed = BytesIO()
         with Image.open(BytesIO(result.stdout)) as image:
-            image.save(packed, 'GIF', optimize=True)
+            image.convert('RGB').quantize(colors=32 if any(kind == 'I' for kind, _ in lines) else 8, dither=Image.Dither.NONE).save(packed, 'GIF', optimize=True)
         return packed.getvalue()
 
     def menu(self, db, collection, token, screen, config, action):
@@ -183,62 +189,60 @@ class Store:
         def heading(value):
             lines.append(('H', value))
         choices = iter('123456789acdefghijklmnoqrstuvwxyz')
-        def substitution(append):
-            if '~' in token:
-                # Scope to the final separator so a b in custom prose cannot
-                # steal the substitution. Never repeat the prose in commands.
-                tail = token.rsplit('~~', 1)[1]
-                return f's/~~{tail}/~~{tail[:-1]}{append}b'
-            return f's/b/{append}b'
+        def panel(title):
+            lines.append(('P', title))
         def link(label, target, cfg=None, act=None):
             choice = next(choices)
-            dest = self.node(db, collection, target, cfg or config, act, ident=token[:-1]+choice+'b')
-            text(f'{substitution(choice)}  {label}')
+            dest = self.node(db, collection, target, cfg or config, act,
+                             ident=token.replace('b', choice+'b', 1))
+            text(f's/b/{choice}b  {label}')
         def custom(field, placeholder):
-            key = {'value':'v','note':'n','star':'t'}[field]
-            text(substitution(f'~{key}~{placeholder}~~'))
+            text(f's/b/b.{field}={placeholder}')
         def config_line():
-            text(f"{config['value']} {config['unit']} | theme: {config['theme']}")
+            text(f"{config['value']} {config['unit']} since {config['subject']} | {config['theme']}")
         if screen == 'settings':
-            heading('1 / 3 - COUNTER SETTINGS')
+            heading('1 / 3  •  COUNTER SETTINGS')
             config_line()
-            text('Send the commands below in Discord to edit your GIF message.')
-            text('Quick presets (these also reset both notes):')
+            panel('PRESETS & COLOUR')
             for name, preset in PRESETS.items():
-                link(name.upper(), 'settings', dict(preset))
-            text('Change just the measurement unit:')
-            for unit in UNITS:
-                if unit != config['unit']:
-                    link(unit, 'settings', dict(config, unit=unit))
-            text('Set elapsed amount: replace NUMBER with e.g. 0, 1, 12 or 0.5')
-            custom('value', 'NUMBER')
-            text('Changing unit keeps the number: this is a meme label, not conversion.')
+                link(name.upper(), 'settings', dict(preset, subject=config['subject']))
+            text('Presets reset amount, theme and notes.')
             for theme in THEMES:
                 if theme != config['theme']:
                     link('THEME ' + theme, 'settings', dict(config, theme=theme))
+            panel('MEASUREMENT UNIT')
+            for unit in UNITS:
+                if unit != config['unit']:
+                    link(unit, 'settings', dict(config, unit=unit))
+            text('The number stays the same when changing units.')
+            panel('SUBJECT, AMOUNT & NEXT')
+            text('Time since what? Replace TEXT:')
+            custom('subject', 'TEXT')
+            text('Elapsed amount (e.g. 0, 1, 0.5):')
+            custom('value', 'NUMBER')
             link('NEXT: NOTES', 'notes')
             link('SAVED GIFS', 'library')
             link('FAVOURITES', 'favourites')
         elif screen == 'notes':
-            heading('2 / 3 - NOTES')
+            heading('2 / 3  •  NOTES')
             config_line()
-            text('Technical note: ' + (config['note'] or '(empty)'))
-            text('Star note: ' + (config['star'] or '(empty)'))
-            text('Replace TEXT with your words. Use underscores for spaces.')
-            text('Use EMPTY to clear. Encode slashes as %2F and ~ as %7E.')
-            text('Technical note: up to 180 characters.')
+            panel('TECHNICAL NOTE')
+            text(config['note'] or '(empty)')
             custom('note', 'TEXT')
-            text('Star note: up to 32 characters.')
+            text('Up to 180 characters. EMPTY clears it.')
+            panel('STAR NOTE & NEXT')
+            text(config['star'] or '(empty)')
             custom('star', 'TEXT')
+            text('Up to 32 characters. EMPTY clears it.')
             link('NEXT: PREVIEW AND SAVE', 'preview')
             link('BACK: SETTINGS', 'settings')
         elif screen == 'preview':
-            heading('3 / 3 - PREVIEW AND SAVE')
+            heading('3 / 3  •  PREVIEW & SAVE')
             config_line()
+            panel('YOUR GIF')
             lines.append(('I', json.dumps(config)))
-            text('Technical note: ' + (config['note'] or '(empty)'))
-            text('Star note: ' + (config['star'] or '(empty)'))
-            text('A static snapshot, with deep fry outside the readable notes.')
+            panel('READY TO SAVE')
+            text('The saved GIF is a static snapshot.')
             link('CREATE AND SAVE GIF', 'saved', act=dict(kind='save'))
             link('BACK: NOTES', 'notes')
             link('BACK: SETTINGS', 'settings')
@@ -249,12 +253,16 @@ class Store:
             if screen == 'favourites':
                 query += ' AND favourite=1'
             rows = db.execute(query + ' ORDER BY created DESC,rowid DESC LIMIT 7 OFFSET ?', (collection, offset)).fetchall()
+            panel('YOUR COLLECTION')
             if not rows:
                 text('Nothing saved here yet.')
             for row in rows[:6]:
                 item = json.loads(row['config'])
-                label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} / {item['theme']}"
+                if rows.index(row) == 3:
+                    panel('MORE GIFS')
+                label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} since {item.get('subject', DEFAULTS['subject'])}"
                 link(label, 'saved', item, dict(kind='view', id=row['id']))
+            panel('BROWSE & CREATE')
             if offset:
                 link('PREVIOUS PAGE', screen, act=dict(offset=max(0, offset-6)))
             if len(rows) > 6:
@@ -268,11 +276,12 @@ class Store:
                 raise KeyError('Unknown saved GIF')
             heading('GIF SAVED')
             config_line()
-            text('Send this permanent GIF URL in Discord:')
+            panel('SHARE YOUR GIF')
+            text('Permanent GIF link:')
             text(f"{self.base_url}/count/g/{row['id']}.gif")
             link('SHOW THE GIF', 'raw', act=dict(kind='view', id=row['id']))
             text('Open that GIF in Discord and use its star to favourite it there.')
-            text('The menu also has its own favourites list:')
+            panel('SAVE & ORGANISE')
             link('REMOVE FROM FAVOURITES' if row['favourite'] else 'ADD TO FAVOURITES', 'saved',
                  act=dict(kind='favourite', id=row['id'], value=not row['favourite']))
             link('SAVED GIFS', 'library')
@@ -280,6 +289,7 @@ class Store:
             link('MAKE A VARIATION', 'settings')
         else:
             raise ValueError('Unknown screen')
+        lines.append(('F', 'Type a command in Discord • TEXT: _ = space; ~ = b; encode / ? # % as URL escapes'))
         return lines
 
     def get(self, path):
@@ -292,24 +302,24 @@ class Store:
                 if row is None:
                     raise KeyError('Unknown GIF')
                 return bytes(row['gif'])
-        if len(parts) == 3 and parts[0] == 'gifmenu' and parts[2].endswith('.gif'):
-            collection, token = parts[1].replace('g', 'b'), parts[2][:-4]
-            with self.connect() as db:
-                if re.fullmatch('raw-[0-9a-f]{32}', token):
-                    row = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (collection, token[4:])).fetchone()
-                    if row is None:
-                        raise KeyError('Unknown GIF')
-                    return bytes(row['gif'])
+        if len(parts) == 4 and parts[0] == 'gifmenu' and parts[2] == 'v2' and parts[3].endswith('.gif'):
+            collection, token = parts[1].replace('g', 'b'), parts[3][:-4]
             return self.page(collection, token)
+        # Keep permanent raw links from earlier menus working.
+        if len(parts) == 3 and parts[0] == 'gifmenu' and re.fullmatch(r'raw-[0-9a-f]{32}\.gif', parts[2]):
+            with self.connect() as db:
+                row = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (parts[1].replace('g','b'), parts[2][4:-4])).fetchone()
+                if row is not None:
+                    return bytes(row['gif'])
         raise KeyError('Unknown route')
 
 def handler_for(store):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-f]{32})/p\.gif', urlsplit(self.path).path)
+            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b)\.gif', urlsplit(self.path).path)
             if legacy:
                 self.send_response(302)
-                self.send_header('Location', store.url(legacy.group(1)))
+                self.send_header('Location', store.url(legacy.group(1).replace('g', 'b')))
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', '0')
                 self.end_headers()

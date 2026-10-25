@@ -5,7 +5,7 @@ import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from PIL import Image
 from server import Store, DEFAULTS, PRESETS, validate
 from render import render_counter
@@ -35,7 +35,7 @@ class CounterTests(unittest.TestCase):
             result = self.store.page(self.collection, token)
             image = Image.open(BytesIO(result))
             image.load()
-            self.assertEqual(image.width, 1200)
+            self.assertEqual(image.width, 1600)
         for config in PRESETS.values():
             image = Image.open(BytesIO(render_counter(config)))
             image.load()
@@ -57,7 +57,7 @@ class CounterTests(unittest.TestCase):
     def test_favourites_add_remove_ownership_and_raw_navigation(self):
         saved_token, saved = self.saved()
         with self.store.connect() as db:
-            raw_token = db.execute("SELECT id FROM pages WHERE collection=? AND screen='raw'", (self.collection,)).fetchone()['id']
+            raw_token = db.execute("SELECT id FROM pages_v2 WHERE collection=? AND screen='raw'", (self.collection,)).fetchone()['id']
         self.assertEqual(self.store.get(self.store.url(self.collection, raw_token)), saved['gif'])
         for value in (True, False):
             token = self.node('saved', action={'kind': 'favourite', 'id': saved['id'], 'value': value})
@@ -75,11 +75,11 @@ class CounterTests(unittest.TestCase):
 
     def test_custom_text_is_literal_validated_and_keeps_navigation(self):
         text = 'hello_world_%26_caf%C3%A9'
-        path = f'/count/gifmenu/{self.collection}/~n~{text}~~b.gif'
+        path = self.store.url(self.collection, f'b.note={text}')
         self.store.get(path)
         with self.store.connect() as db:
-            rows = db.execute("SELECT * FROM pages WHERE screen='notes'").fetchall()
-        self.assertTrue(all(r['id'].endswith('b') for r in rows))
+            rows = db.execute("SELECT * FROM pages_v2 WHERE screen='notes'").fetchall()
+        self.assertTrue(all('b.note=' in r['id'] for r in rows))
         self.assertTrue(all(json.loads(r['config'])['note'] == 'hello world & café' for r in rows))
         for value in ('-1', 'NaN', 'inf', '1e99999', '1/2', '1;exit'):
             with self.assertRaises(ValueError):
@@ -92,9 +92,9 @@ class CounterTests(unittest.TestCase):
     def test_invalid_input_rolls_back_and_old_menu_is_immutable(self):
         original = self.store.page(self.collection, 'b')
         with self.assertRaises(ValueError):
-            self.store.page(self.collection, '~v~oops~~b')
+            self.store.page(self.collection, 'b.value=oops')
         with self.store.connect() as db:
-            self.assertFalse(db.execute("SELECT 1 FROM pages WHERE id='~v~oops~~b'").fetchone())
+            self.assertFalse(db.execute("SELECT 1 FROM pages_v2 WHERE id='b.value=oops'").fetchone())
         self.assertEqual(original, self.store.page(self.collection, 'b'))
 
     def test_library_pagination(self):
@@ -128,12 +128,11 @@ class CounterTests(unittest.TestCase):
             if kind == 'T' and line.startswith('s/'):
                 command = line.split('  ')[0]
                 self.assertNotIn('.gif', command)
-                self.assertTrue(command.endswith('b'))
-                if '~' not in command:
+                if '.=' not in command and '.value=' not in command and '.subject=' not in command:
                     self.assertRegex(command, r'^s/b/[1-9ac-z]b$')
 
     def test_b_in_note_does_not_break_following_commands(self):
-        token = '~n~bob_brought_bread~~b'
+        token = 'b.note=bob_brought_bread'
         self.store.page(self.collection, token)
         with self.store.connect() as db:
             lines = self.store.menu(db, self.collection, token, 'notes', dict(DEFAULTS,note='bob brought bread'), None)
@@ -141,17 +140,68 @@ class CounterTests(unittest.TestCase):
         _, old, new = command.split('/')
         url = self.store.url(self.collection,token)
         target = url.replace(old,new,1)
+        self.assertEqual(command, 's/b/1b')
         self.assertIn('bob_brought_bread',target)
         self.store.get(target)
         with self.store.connect() as db:
-            row = db.execute('SELECT * FROM pages WHERE collection=? AND id=?',(self.collection,target.rsplit('/',1)[1][:-4])).fetchone()
+            row = db.execute('SELECT * FROM pages_v2 WHERE collection=? AND id=?',(self.collection,target.rsplit('/',1)[1][:-4])).fetchone()
         self.assertEqual(row['screen'],'preview')
         self.assertEqual(json.loads(row['config'])['note'],'bob brought bread')
+
+    def test_multiple_inputs_and_navigation_use_first_b(self):
+        url = self.store.url(self.collection)
+        commands = ['s/b/b.subject=bob_got_a_kill', 's/b/b.value=0.5',
+                    's/b/cb', 's/b/b.note=bob_brought_bread',
+                    's/b/b.star=BEST', 's/b/1b', 's/b/1b']
+        self.store.get(url)
+        for command in commands:
+            _,old,new = command.split('/')
+            url = url.replace(old,new,1)
+            self.store.get(url)
+        with self.store.connect() as db:
+            row = db.execute('SELECT * FROM saved WHERE collection=?',(self.collection,)).fetchone()
+        config=json.loads(row['config'])
+        self.assertEqual(config['subject'],'bob got a kill')
+        self.assertEqual(config['value'],'0.5')
+        self.assertEqual(config['note'],'bob brought bread')
+        self.assertEqual(config['star'],'BEST')
+        # A preset reached after editing must override old input values.
+        url=self.store.url(self.collection,'b.value=0.5')
+        self.store.get(url)
+        url=url.replace('b','2b',1)
+        self.store.get(url)
+        with self.store.connect() as db:
+            config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
+                (self.collection,urlsplit(url).path.rsplit('/',1)[1][:-4])).fetchone()[0])
+        self.assertEqual(config['value'],'0')
+        self.assertEqual(config['unit'],'hours')
+
+    def test_tilde_input_shortcut_and_literal_tilde(self):
+        for text,expected in [('~a~el','babel'), ('tower_of_~a~el','tower of babel'), ('%7E','~'), ('bob','bob')]:
+            token='b.subject='+text
+            self.store.get(self.store.url(self.collection,token))
+            with self.store.connect() as db:
+                config=json.loads(db.execute('SELECT config FROM pages_v2 WHERE collection=? AND id=?',
+                    (self.collection,token)).fetchone()[0])
+            self.assertEqual(config['subject'],expected)
+            self.store.get(self.store.url(self.collection,token).replace('b','cb',1))
+
+    def test_subject_validation_and_old_configs(self):
+        old=dict(DEFAULTS)
+        del old['subject']
+        self.assertEqual(validate(old)['subject'],DEFAULTS['subject'])
+        for subject in ('', ' ', 'x'*81, 'bad\nsubject'):
+            with self.assertRaises(ValueError):
+                validate(dict(DEFAULTS,subject=subject))
+        for subject in ('kill', 'bob got a kill', 'x'*80):
+            image=Image.open(BytesIO(render_counter(dict(DEFAULTS,subject=subject))))
+            image.load()
+            self.assertEqual(image.size,(1200,720))
 
     def test_old_collection_keeps_saved_images_and_gains_b_root(self):
         _,saved=self.saved()
         with self.store.connect() as db:
-            db.execute("DELETE FROM pages WHERE collection=? AND id='b'",(self.collection,))
+            db.execute("DELETE FROM pages_v2 WHERE collection=? AND id='b'",(self.collection,))
             self.store.node(db,self.collection,'settings',DEFAULTS,ident='p')
         migrated=Store(self.store.path,self.store.base_url)
         self.assertTrue(migrated.get(migrated.url(self.collection)).startswith(b'GIF'))

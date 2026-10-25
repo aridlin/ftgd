@@ -57,13 +57,18 @@ def render_counter(config, fried=True):
     d = ImageDraw.Draw(im)
     d.rectangle((25, 25, 1175, 695), outline=edge, width=10)
     d.rectangle((42, 42, 1158, 678), outline='white', width=3)
-    title = config['unit'].upper() + ' SINCE KIKO'
-    size = 48 if len(title) < 24 else 42
-    for text, y in ((title, 65), ('SHAT HIMSELF', 128)):
+    title = config['unit'].upper() + ' SINCE ' + config.get('subject', 'kiko shat himself').upper()
+    for size in range(48, 16, -1):
         face = font(size, True)
+        title_lines = wrap(d, title, face, 940)
+        if len(title_lines) * (size + 8) <= 145:
+            break
+    y = 60
+    for text in title_lines:
         x = (1200 - d.textlength(text, font=face)) / 2
         for dx, dy, color in ((7, 7, '#151515'), (3, 3, 'white'), (0, 0, edge)):
             d.text((x + dx, y + dy), text, font=face, fill=color)
+        y += size + 8
     d.rectangle((93, 253, 483, 593), fill=edge)
     d.rectangle((79, 239, 469, 579), fill='white', outline=edge, width=6)
     value = config['value']
@@ -103,63 +108,83 @@ def render_counter(config, fried=True):
         # The configurable star note also needs to stay legible.
         im.paste(readable.crop((965, 557, 1103, 635)), (965, 557))
     output = BytesIO()
-    im.save(output, 'GIF')
+    im.quantize(colors=64, dither=Image.Dither.NONE).save(output, 'GIF', optimize=True)
     return output.getvalue()
 
 def render_menu_image(lines):
-    """Readable, high-contrast TrueType menus; leave compression damage to memes."""
-    width, margin = 1200, 40
+    """Landscape cards use Discord's limited preview height efficiently."""
+    width, margin, gap = 1600, 28, 22
     measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
-    body_font, command_font = font(24), font(25, True)
-    heading_font, title_font = font(34, True), font(38, True)
-    blocks, height = [], 112
+    body, command, heading = font(26), font(29, True), font(28, True)
+    title = next(text for kind, text in lines if kind == 'H')
+    groups, intro, footer = [], [], ''
     for kind, text in lines:
-        if kind == 'I':
-            blocks.append(('I', text, 688))
-            height += 688
-            continue
         if kind == 'H':
-            blocks.append(('H', text, 66))
-            height += 66
             continue
-        if text.startswith('s/'):
-            command, _, label = text.partition('  ')
-            command_width = measure.textlength(command, font=command_font)
-            if command_width > width - 2*margin - 32:
-                # Only long custom values take a second visual line; normal
-                # navigation remains a four-character replacement.
-                rows = wrap(measure, command, command_font, width-2*margin-32)
+        if kind == 'F':
+            footer = text
+        elif kind == 'P':
+            groups.append([text, []])
+        elif groups:
+            groups[-1][1].append((kind, text))
+        else:
+            intro.append(text)
+    if not groups:
+        groups = [['MENU', []]]
+    count = len(groups)
+    column_width = (width-2*margin-gap*(count-1))//count
+    inner = column_width-32
+    header_rows = wrap(measure, ' • '.join(intro), body, width-2*margin)
+    top = 88 + 34*len(header_rows)
+    columns = []
+    for label, items in groups:
+        blocks, height = [], 56
+        for kind, text in items:
+            if kind == 'I':
+                h = int(inner*.6)+14
+                blocks.append(('I', text, h))
+            elif text.startswith('s/'):
+                cmd, _, caption = text.partition('  ')
+                inline = bool(caption) and measure.textlength(cmd,font=command) < 150
+                captions = wrap(measure, caption, body, inner-180 if inline else inner-24) if caption else []
+                commands = wrap(measure, cmd, command, inner-24)
+                h = 22 + (max(36,32*len(captions)) if inline else 32*len(captions)+36*len(commands))
+                blocks.append(('C', (captions, commands, inline), h))
             else:
-                rows = [command]
-            block_height = 18 + 34*len(rows) + (34 if label and command_width > 360 else 0)
-            blocks.append(('C', (rows, label, command_width), block_height+8))
-            height += block_height+8
-        else:
-            for row in wrap(measure, text, body_font, width-2*margin):
-                blocks.append(('T', row, 36))
-                height += 36
-    im = Image.new('RGB', (width, height+36), '#0c1018')
+                rows = wrap(measure, text, body, inner)
+                h = 32*len(rows)+12
+                blocks.append(('T', rows, h))
+            height += h
+        columns.append((label, blocks, height))
+    content_height = max(h for _,_,h in columns)
+    height = top+content_height+64
+    im = Image.new('RGB', (width,height), '#0c1018')
     d = ImageDraw.Draw(im)
-    d.rectangle((0, 0, width, 91), fill='#182437')
-    d.text((margin, 24), 'COUNTER GIF MENU', font=title_font, fill='#ffffff')
-    d.line((margin, 91, width-margin, 91), fill='#91a7c6', width=2)
-    y = 112
-    for kind, text, block_height in blocks:
-        if kind == 'H':
-            d.text((margin, y+5), text, font=heading_font, fill='#ffffff')
-        elif kind == 'T':
-            d.text((margin, y+3), text, font=body_font, fill='#edf2fc')
-        elif kind == 'I':
-            with Image.open(BytesIO(render_counter(json.loads(text)))) as preview:
-                im.paste(preview.convert('RGB').resize((1120,672), Image.Resampling.LANCZOS), (margin,y))
-        else:
-            rows, label, command_width = text
-            d.rounded_rectangle((margin,y,width-margin,y+block_height-8),radius=7,fill='#1b2a40',outline='#657d9e',width=1)
-            for index, row in enumerate(rows):
-                d.text((margin+16,y+8+index*34),row,font=command_font,fill='#ffe477')
-            if label:
-                label_x = margin+16 if command_width>360 else margin+390
-                label_y = y+8+34*len(rows) if command_width>360 else y+9
-                d.text((label_x,label_y),label,font=body_font,fill='#ffffff')
-        y += block_height
+    d.text((margin,20), title, font=font(38,True), fill='white')
+    for i,row in enumerate(header_rows):
+        d.text((margin,75+34*i), row, font=body, fill='#edf2fc')
+    for col,(label,blocks,_) in enumerate(columns):
+        x = margin+col*(column_width+gap)
+        d.rectangle((x,top,x+column_width,top+content_height),fill='#141e2e')
+        d.text((x+16,top+12),label,font=heading,fill='white')
+        y=top+56
+        for kind,text,h in blocks:
+            if kind=='I':
+                with Image.open(BytesIO(render_counter(json.loads(text)))) as preview:
+                    im.paste(preview.convert('RGB').resize((inner,int(inner*.6)),Image.Resampling.LANCZOS),(x+16,y))
+            elif kind=='C':
+                captions,commands,inline=text
+                d.rectangle((x+16,y,x+column_width-16,y+h-10),fill='#24364e')
+                cy=y+7
+                for row in captions:
+                    d.text((x+28+(156 if inline else 0),cy),row,font=body,fill='white');cy+=32
+                if inline:
+                    cy=y+7
+                for row in commands:
+                    d.text((x+28,cy),row,font=command,fill='#ffe477');cy+=36
+            else:
+                for i,row in enumerate(text):
+                    d.text((x+16,y+32*i),row,font=body,fill='#edf2fc')
+            y+=h
+    d.text((margin,height-41),footer,font=font(23),fill='#edf2fc')
     return im

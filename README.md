@@ -54,7 +54,7 @@ int main() {
 [`examples/counter_menu`](examples/counter_menu/README.md) is a complete hosted
 GIF menu: three configuration screens, a counter preview, persistent saved GIFs,
 and favourites. It uses Discord's `s/old/new` edits and stable image URLs, with
-days/hours/microseconds presets. Build with `make counter-menu`; run its tests
+days/hours/microseconds presets and editable counter subjects. Build with `make counter-menu`; run its tests
 with `make counter-test`.
 
 ```bash
@@ -63,6 +63,23 @@ make test
 ```
 
 The example writes `build/basic.gif`.
+
+## FTGD 0.2
+
+GIF output now uses dictionary LZW compression, including 9–12 bit code widths
+and dictionary resets. The existing dashboard API and palette are unchanged.
+Run `make codec-test` (Python + Pillow) for independent pixel round trips and
+animated-frame decoding, alongside `make test` for the C++ API smoke tests.
+
+`ftgd::encode_image(image)` encodes an externally drawn `ftgd::Image`; this lets
+applications use a TrueType rasterizer without depending on the built-in font.
+The counter example uses Pillow/DejaVu Sans for landscape menu cards, then FTGD
+for GIF encoding. This optional example does not add a library dependency.
+
+`ftgd::append_command("1", "b")` returns `s/b/1b`. Put the marker before any
+user-entered text and keep the URL before it free of the marker. The replacement
+retains the marker for the next command. The helper rejects empty markers,
+slashes, and choices containing the marker; it does not validate the host URL.
 
 ## Notes
 

@@ -29,7 +29,7 @@
 #define FTGD_VERSION_MAJOR 0
 #endif
 #ifndef FTGD_VERSION_MINOR
-#define FTGD_VERSION_MINOR 1
+#define FTGD_VERSION_MINOR 2
 #endif
 #ifndef FTGD_VERSION_PATCH
 #define FTGD_VERSION_PATCH 0
@@ -177,6 +177,10 @@ std::string command_s(const std::string& from, const std::string& to);
 std::string apply_command(const std::string& page, const std::string& command);
 std::string apply_commands(std::string page, std::initializer_list<std::string> commands);
 std::string page_from_url(const std::string& url_value, const Config& cfg = {});
+// Encode an externally rasterized image (e.g. TrueType text) without bitmap widgets.
+std::vector<uint8_t> encode_image(const Image& image);
+// Insert a choice before the first marker, retaining it for the next edit.
+std::string append_command(const std::string& choice, const std::string& marker = "b");
 Image load_ppm(const char* path);
 Image image_from_rgba(int width, int height, const uint8_t* rgba);
 Image checker_image(int width, int height, Color a, Color b, int cell = 12);
@@ -496,6 +500,22 @@ Image checker_image(int width, int height, Color a, Color b, int cell) {
     return img;
 }
 
+std::vector<uint8_t> encode_image(const Image& image) {
+    if (!image.valid()) return {};
+    detail::Canvas canvas;
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.pixels = image.pixels;
+    return detail::encode_gif({canvas}, 35);
+}
+
+std::string append_command(const std::string& choice, const std::string& marker) {
+    if (marker.empty() || choice.find(marker) != std::string::npos ||
+        marker.find('/') != std::string::npos || choice.find('/') != std::string::npos)
+        return {};
+    return command_s(marker, choice + marker);
+}
+
 namespace detail {
 
 Canvas make_canvas(int width, int height, Color fill) {
@@ -713,31 +733,46 @@ struct BitWriter {
 };
 
 static std::vector<uint8_t> lzw(const std::vector<uint8_t>& indices) {
-    const int min_code_size = 8;
-    const int clear = 1 << min_code_size;
-    const int eoi = clear + 1;
+    constexpr int clear = 256, eoi = 257;
     BitWriter bw;
-    int next = eoi + 1;
-    int code_size = min_code_size + 1;
+    std::unordered_map<uint32_t, int> dictionary;
+    dictionary.reserve(4096);
+    int next = 258, decoder_next = 258, code_size = 9;
     bool have_prev = false;
+    // Track the decoder's dictionary growth separately: its additions lag
+    // the encoder by one emitted code, including the final code before EOI.
+    auto emit = [&](int code) {
+        bw.code(code, code_size);
+        if (have_prev) {
+            if (decoder_next < 4096) ++decoder_next;
+            if (decoder_next == (1 << code_size) && code_size < 12) ++code_size;
+        }
+        have_prev = true;
+    };
     auto reset = [&]() {
-        next = eoi + 1;
-        code_size = min_code_size + 1;
+        bw.code(clear, code_size);
+        dictionary.clear();
+        next = decoder_next = 258;
+        code_size = 9;
         have_prev = false;
     };
-    bw.code(clear, code_size);
-    for (uint8_t index : indices) {
-        if (next >= 4096) {
-            bw.code(clear, code_size);
-            reset();
+    reset();
+    if (!indices.empty()) {
+        int prefix = indices[0];
+        for (size_t i = 1; i < indices.size(); ++i) {
+            uint8_t value = indices[i];
+            uint32_t key = (static_cast<uint32_t>(prefix) << 8) | value;
+            auto found = dictionary.find(key);
+            if (found != dictionary.end()) {
+                prefix = found->second;
+                continue;
+            }
+            emit(prefix);
+            if (next < 4096) dictionary.emplace(key, next++);
+            else reset();
+            prefix = value;
         }
-        bw.code(index, code_size);
-        if (have_prev) {
-            ++next;
-            if (next == (1 << code_size) && code_size < 12) ++code_size;
-        } else {
-            have_prev = true;
-        }
+        emit(prefix);
     }
     bw.code(eoi, code_size);
     bw.finish();

@@ -29,3 +29,8 @@ build/counter-menu: examples/counter_menu/menu.cpp ftgd.hpp | build
 
 counter-test: build/counter-menu
 	python3 -m unittest discover -s examples/counter_menu -p 'test_*.py' -v
+
+.PHONY: codec-test
+codec-test: counter-menu build/basic
+	./build/basic
+	python3 -m unittest discover -s tests -p 'test_gif_codec.py' -v
