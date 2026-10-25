@@ -1,0 +1,4 @@
+# Import inside the prol.aridlin.pl site block.
+handle /count/* {
+    reverse_proxy 127.0.0.1:8793
+}

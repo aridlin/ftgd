@@ -533,6 +533,25 @@ void stroke_rect(Canvas& c, int x, int y, int w, int h, Color color) {
 }
 
 static std::array<uint8_t, 7> glyph(char ch) {
+#ifdef FTGD_LOWERCASE_GLYPHS
+    // Opt in when text contains case-sensitive URLs or Discord commands.
+    static const std::array<std::array<uint8_t, 7>, 26> lower = {{
+        {0,0,14,1,15,17,15}, {16,16,30,17,17,17,30},
+        {0,0,14,16,16,17,14}, {1,1,15,17,17,17,15},
+        {0,0,14,17,31,16,14}, {6,9,8,28,8,8,8},
+        {0,15,17,17,15,1,14}, {16,16,30,17,17,17,17},
+        {4,0,12,4,4,4,14}, {2,0,6,2,2,18,12},
+        {16,16,18,20,24,20,18}, {12,4,4,4,4,4,14},
+        {0,0,26,21,21,21,21}, {0,0,30,17,17,17,17},
+        {0,0,14,17,17,17,14}, {0,30,17,17,30,16,16},
+        {0,15,17,17,15,1,1}, {0,0,22,25,16,16,16},
+        {0,0,15,16,14,1,30}, {8,8,28,8,8,9,6},
+        {0,0,17,17,17,19,13}, {0,0,17,17,17,10,4},
+        {0,0,17,17,21,21,10}, {0,0,17,10,4,10,17},
+        {0,17,17,17,15,1,14}, {0,0,31,2,4,8,31}
+    }};
+    if (ch >= 'a' && ch <= 'z') return lower[static_cast<size_t>(ch - 'a')];
+#endif
     ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
     switch (ch) {
     case 'A': return {14, 17, 17, 31, 17, 17, 17};
@@ -585,6 +604,15 @@ static std::array<uint8_t, 7> glyph(char ch) {
     case '[': return {14, 8, 8, 8, 8, 8, 14};
     case ']': return {14, 2, 2, 2, 2, 2, 14};
     case ' ': return {0, 0, 0, 0, 0, 0, 0};
+    case '~': return {0,0,9,22,0,0,0};
+    case '|': return {4,4,4,4,4,4,4};
+    case '!': return {4,4,4,4,4,0,4};
+    case '(': return {2,4,8,8,8,4,2};
+    case ')': return {8,4,2,2,2,4,8};
+    case ',': return {0,0,0,0,4,4,8};
+    case ';': return {0,4,4,0,4,4,8};
+    case '*': return {0,21,14,31,14,21,0};
+    case '\'': return {4,4,8,0,0,0,0};
     default: return {14, 17, 1, 2, 4, 0, 4};
     }
 }

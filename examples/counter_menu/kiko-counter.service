@@ -1,0 +1,22 @@
+[Unit]
+Description=Kiko FTGD counter GIF menu
+After=network.target
+
+[Service]
+User=kiko-counter
+Group=kiko-counter
+WorkingDirectory=/opt/kiko-counter
+ExecStart=/usr/bin/python3 /opt/kiko-counter/examples/counter_menu/server.py --port 8793 --base-url https://prol.aridlin.pl --data /var/lib/kiko-counter/data.sqlite3
+Restart=on-failure
+StateDirectory=kiko-counter
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=512M
+TasksMax=64
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
