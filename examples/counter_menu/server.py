@@ -11,13 +11,12 @@ import re
 import secrets
 import sqlite3
 import subprocess
-import textwrap
 import tempfile
 from io import BytesIO
 from PIL import Image
 from urllib.parse import unquote, urlsplit
 
-from render import render_counter, THEMES
+from render import render_counter, THEMES, render_menu_image
 
 ROOT = Path(__file__).resolve().parents[2]
 UNITS = ('days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds')
@@ -69,6 +68,8 @@ class Store:
                     favourite INTEGER NOT NULL DEFAULT 0,
                     created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             ''')
+            # New navigation roots share the existing collections and saved GIFs.
+            db.execute("INSERT OR IGNORE INTO pages SELECT id,'b','settings',?, 'null',NULL FROM collections", (json.dumps(DEFAULTS),))
 
     @contextmanager
     def connect(self):
@@ -81,8 +82,13 @@ class Store:
             db.close()
 
     def node(self, db, collection, screen, config, action=None, ident=None):
-        ident = ident or secrets.token_hex(4)
-        db.execute('INSERT INTO pages VALUES(?,?,?,?,?,NULL)',
+        if ident is None:
+            number = db.execute('SELECT count(*) FROM pages WHERE collection=?', (collection,)).fetchone()[0] + 1
+            ident = f'x{number}b'
+            while db.execute('SELECT 1 FROM pages WHERE collection=? AND id=?', (collection, ident)).fetchone():
+                number += 1
+                ident = f'x{number}b'
+        db.execute('INSERT OR IGNORE INTO pages VALUES(?,?,?,?,?,NULL)',
             (collection, ident, screen, json.dumps(config), json.dumps(action)))
         return ident
 
@@ -90,16 +96,23 @@ class Store:
         collection = secrets.token_hex(16)
         with self.connect() as db:
             db.execute('INSERT INTO collections VALUES(?)', (collection,))
-            self.node(db, collection, 'settings', DEFAULTS, ident='p')
+            self.node(db, collection, 'settings', DEFAULTS, ident='b')
         return collection
 
-    def url(self, collection, page='p'):
-        return f'{self.base_url}/count/gifmenu/{collection}/{page}.gif'
+    def url(self, collection, page='b'):
+        # The entire URL before the page marker must be free of lowercase b:
+        # Discord replaces the first occurrence in the message, not just its path.
+        alias = collection.replace('b', 'g')
+        return f'{self.base_url}/count/gifmenu/{alias}/{page}.gif'
 
     def input_page(self, db, collection, token):
-        parent, field, value = token.split('~', 2)
-        if field not in ('value', 'note', 'star'):
-            raise ValueError('Unknown input field')
+        match = re.fullmatch(r'(.*)~([vnt])~([^~]*)~~b', token)
+        if not match:
+            raise ValueError('Use the displayed input format, ending in ~~b')
+        prefix, field, value = match.groups()
+        parent = prefix + 'b'
+        field = {'v':'value', 'n':'note', 't':'star'}[field]
+        value = unquote(value)
         old = db.execute('SELECT * FROM pages WHERE collection=? AND id=?', (collection, parent)).fetchone()
         if old is None:
             raise KeyError('Unknown source page')
@@ -119,7 +132,7 @@ class Store:
             if not db.execute('SELECT 1 FROM collections WHERE id=?', (collection,)).fetchone():
                 raise KeyError('Unknown collection')
             row = db.execute('SELECT * FROM pages WHERE collection=? AND id=?', (collection, token)).fetchone()
-            if row is None and token.count('~') >= 2:
+            if row is None and '~' in token:
                 row = self.input_page(db, collection, token)
             if row is None:
                 raise KeyError('Unknown page')
@@ -127,6 +140,11 @@ class Store:
                 return bytes(row['body'])
             config, action = json.loads(row['config']), json.loads(row['action'])
             screen = row['screen']
+            if screen == 'raw':
+                saved = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (collection, action['id'])).fetchone()
+                if saved is None:
+                    raise KeyError('Unknown saved GIF')
+                return bytes(saved['gif'])
             if action and action.get('kind') == 'save':
                 saved_id = secrets.token_hex(16)
                 db.execute('INSERT INTO saved(id,collection,config,gif) VALUES(?,?,?,?)',
@@ -138,31 +156,17 @@ class Store:
                 if result.rowcount != 1:
                     raise KeyError('Unknown saved GIF')
                 action = dict(kind='view', id=action['id'])
-            if '~' in token:
-                # A long custom note makes the edited URL too long to repeat in
-                # substitution controls. Give the user a short continuation URL.
-                short = self.node(db, collection, screen, config)
-                lines = [('H', 'VALUE UPDATED'),
-                         ('T', 'Send this short menu URL to continue:'),
-                         ('T', self.url(collection, short))]
-            else:
-                lines = self.menu(db, collection, token, screen, config, action)
+            lines = self.menu(db, collection, token, screen, config, action)
             body = self.render_menu(collection, token, lines)
             db.execute('UPDATE pages SET body=? WHERE collection=? AND id=?', (body, collection, token))
             return body
 
     def render_menu(self, collection, token, lines):
         with tempfile.TemporaryDirectory(prefix='ftgd-preview-') as tmp:
-            prepared = []
-            for kind, text in lines:
-                if kind == 'I':
-                    path = Path(tmp) / 'preview.ppm'
-                    Image.open(BytesIO(render_counter(json.loads(text)))).convert('RGB').save(path)
-                    text = str(path)
-                prepared.append(kind + '\t' + text)
-            data = '\n'.join(prepared) + '\n'
-            result = subprocess.run([str(self.renderer), self.base_url, collection, token],
-                input=data.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True)
+            path = Path(tmp) / 'menu.ppm'
+            render_menu_image(lines).save(path)
+            result = subprocess.run([str(self.renderer), str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True)
         if not result.stdout.startswith(b'GIF89a'):
             raise RuntimeError('Menu renderer did not return a GIF')
         # FTGD's dependency-free encoder is deliberately simple. Repack its
@@ -175,17 +179,24 @@ class Store:
     def menu(self, db, collection, token, screen, config, action):
         lines = []
         def text(value):
-            # FTGD's font is ASCII; counter art supports Unicode via Pillow.
-            value = value.encode('ascii', 'replace').decode()
-            lines.extend(('T', part) for part in textwrap.wrap(value, 94) or [''])
+            lines.append(('T', value))
         def heading(value):
             lines.append(('H', value))
+        choices = iter('123456789acdefghijklmnoqrstuvwxyz')
+        def substitution(append):
+            if '~' in token:
+                # Scope to the final separator so a b in custom prose cannot
+                # steal the substitution. Never repeat the prose in commands.
+                tail = token.rsplit('~~', 1)[1]
+                return f's/~~{tail}/~~{tail[:-1]}{append}b'
+            return f's/b/{append}b'
         def link(label, target, cfg=None, act=None):
-            dest = self.node(db, collection, target, cfg or config, act)
-            # Include .gif in both sides, avoiding a token matching the collection.
-            text(f's/{token}.gif/{dest}.gif  {label}')
+            choice = next(choices)
+            dest = self.node(db, collection, target, cfg or config, act, ident=token[:-1]+choice+'b')
+            text(f'{substitution(choice)}  {label}')
         def custom(field, placeholder):
-            text(f's/{token}.gif/{token}~{field}~{placeholder}.gif')
+            key = {'value':'v','note':'n','star':'t'}[field]
+            text(substitution(f'~{key}~{placeholder}~~'))
         def config_line():
             text(f"{config['value']} {config['unit']} | theme: {config['theme']}")
         if screen == 'settings':
@@ -214,7 +225,7 @@ class Store:
             text('Technical note: ' + (config['note'] or '(empty)'))
             text('Star note: ' + (config['star'] or '(empty)'))
             text('Replace TEXT with your words. Use underscores for spaces.')
-            text('Use EMPTY to remove a note. No slashes; percent-encode special characters.')
+            text('Use EMPTY to clear. Encode slashes as %2F and ~ as %7E.')
             text('Technical note: up to 180 characters.')
             custom('note', 'TEXT')
             text('Star note: up to 32 characters.')
@@ -242,7 +253,7 @@ class Store:
                 text('Nothing saved here yet.')
             for row in rows[:6]:
                 item = json.loads(row['config'])
-                label = f"{'* ' if row['favourite'] else ''}{item['value']} {item['unit']} / {item['theme']} / {row['id'][:8]}"
+                label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} / {item['theme']}"
                 link(label, 'saved', item, dict(kind='view', id=row['id']))
             if offset:
                 link('PREVIOUS PAGE', screen, act=dict(offset=max(0, offset-6)))
@@ -259,8 +270,7 @@ class Store:
             config_line()
             text('Send this permanent GIF URL in Discord:')
             text(f"{self.base_url}/count/g/{row['id']}.gif")
-            text('Or turn this menu message into the GIF:')
-            text(f"s/{token}.gif/raw-{row['id']}.gif")
+            link('SHOW THE GIF', 'raw', act=dict(kind='view', id=row['id']))
             text('Open that GIF in Discord and use its star to favourite it there.')
             text('The menu also has its own favourites list:')
             link('REMOVE FROM FAVOURITES' if row['favourite'] else 'ADD TO FAVOURITES', 'saved',
@@ -283,7 +293,7 @@ class Store:
                     raise KeyError('Unknown GIF')
                 return bytes(row['gif'])
         if len(parts) == 3 and parts[0] == 'gifmenu' and parts[2].endswith('.gif'):
-            collection, token = parts[1], unquote(parts[2][:-4])
+            collection, token = parts[1].replace('g', 'b'), parts[2][:-4]
             with self.connect() as db:
                 if re.fullmatch('raw-[0-9a-f]{32}', token):
                     row = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (collection, token[4:])).fetchone()
@@ -296,6 +306,14 @@ class Store:
 def handler_for(store):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            legacy = re.fullmatch(r'/count/gifmenu/([0-9a-f]{32})/p\.gif', urlsplit(self.path).path)
+            if legacy:
+                self.send_response(302)
+                self.send_header('Location', store.url(legacy.group(1)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             if urlsplit(self.path).path == '/count/':
                 cookie = SimpleCookie()
                 try:

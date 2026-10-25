@@ -1,36 +1,18 @@
 #define FTGD_IMPLEMENTATION
-#define FTGD_LOWERCASE_GLYPHS
 #include "../../ftgd.hpp"
 #include <iostream>
 
-// Line protocol on stdin. User input never becomes a command or a filename.
+// TrueType typography and layout are rasterized by Pillow. FTGD remains the
+// GIF encoder; its tiny built-in bitmap font is not used for these menus.
 int main(int argc, char** argv) {
-    if (argc != 4) return 2;
-    ftgd::Config cfg;
-    cfg.title = "KIKO COUNTER / GIF MENU";
-    cfg.base_url = argv[1];
-    cfg.app_name = std::string("count/gifmenu/") + argv[2];
-    cfg.page = argv[3];
-    cfg.width = 1200;
-    cfg.show_help = false; // Render every control below, not the default three.
-    std::vector<std::pair<std::string, std::string>> lines;
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        auto tab = line.find('\t');
-        if (tab != std::string::npos)
-            lines.emplace_back(line.substr(0, tab), line.substr(tab + 1));
-    }
-    cfg.height = 130 + static_cast<int>(lines.size()) * 33;
-    for (const auto& item : lines) if (item.first == "I") cfg.height += 580;
-    ftgd::Dashboard dash(cfg);
-    dash.begin();
-    for (const auto& item : lines) {
-        if (item.first == "I") dash.image(ftgd::load_ppm(item.second.c_str()), 960, 576);
-        else if (item.first == "H") dash.heading(item.second.c_str());
-        else dash.text(item.second.c_str());
-    }
-    dash.end();
-    auto bytes = dash.gif();
+    if (argc != 2) return 2;
+    auto image = ftgd::load_ppm(argv[1]);
+    if (!image.valid()) return 3;
+    ftgd::detail::Canvas canvas;
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.pixels = std::move(image.pixels);
+    auto bytes = ftgd::detail::encode_gif({canvas}, 35);
     std::cout.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     return std::cout ? 0 : 1;
 }
