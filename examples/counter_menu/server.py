@@ -147,7 +147,7 @@ class Store(LiveStore):
         if not re.fullmatch('[0-9a-f]{32}', collection) or len(token) > 4000:
             raise ValueError('Invalid menu address')
         # Refresh menu presentation after upgrades, without replaying saved actions.
-        seed = 'meters-v1:' + seed
+        seed = 'meters-v2:' + seed
         with self.connect() as db:
             # Actions, their result GIF and all destination tokens commit together.
             # Discord can fetch the same URL many times without saving duplicates.
@@ -209,6 +209,23 @@ class Store(LiveStore):
         with Image.open(BytesIO(result.stdout)) as image:
             image.convert('RGB').quantize(colors=32 if any(kind == 'I' for kind, _ in lines) else 8, dither=Image.Dither.NONE).save(packed, 'GIF', optimize=True)
         return packed.getvalue()
+
+    def browser_state(self, collection, token='~', seed='start'):
+        # A browser visit must initialise the same commands as a GIF request.
+        # Otherwise a copied f~ link may not exist yet, or the form opens defaults.
+        if token != '~': self.page(collection,'~',seed)
+        self.page(collection,token,seed)
+        with self.connect() as db:
+            row=db.execute('SELECT * FROM pages_live WHERE collection=? AND id=?',(collection,token)).fetchone()
+            config=json.loads(row['config'])
+            action=json.loads(row['action'])
+            item=None
+            if action and action.get('kind')=='view':
+                saved=db.execute('SELECT * FROM saved WHERE collection=? AND id=?',(collection,action['id'])).fetchone()
+                if saved is None: raise KeyError('Unknown saved GIF')
+                config=json.loads(saved['config'])
+                item=self.item(saved)
+            return dict(config=validate(config),item=item,screen=row['screen'])
 
     def menu(self, db, collection, token, screen, config, action):
         navigation_config = config
@@ -404,8 +421,9 @@ class Store(LiveStore):
         # Keep permanent raw links from earlier menus working.
         if len(parts) == 3 and parts[0] == 'gifmenu' and re.fullmatch(r'raw-[0-9a-f]{32}\.gif', parts[2]):
             with self.connect() as db:
-                row = db.execute('SELECT gif FROM saved WHERE collection=? AND id=?', (parts[1].replace('g','b'), parts[2][4:-4])).fetchone()
+                row = db.execute('SELECT * FROM saved WHERE collection=? AND id=?', (parts[1].replace('g','b'), parts[2][4:-4])).fetchone()
                 if row is not None:
+                    if json.loads(row['config']).get('module')=='meter': return self.saved_body(db,row)
                     return bytes(row['gif'])
         raise KeyError('Unknown route')
 
@@ -456,7 +474,18 @@ def handler_for(store):
                 with store.connect() as db:
                     exists=db.execute('SELECT 1 FROM collections WHERE id=?',(collection,)).fetchone()
                 if not exists: self.send_body(b'Unknown collection','text/plain',404); return
-                self.send_body((Path(__file__).parent/'web.html').read_bytes(),'text/html; charset=utf-8')
+                parts=urlsplit(self.path).path.strip('/').split('/')
+                token,seed='~','start'
+                if len(parts)==6 and parts[3]=='v2' and parts[5].endswith('.gif'):
+                    token,seed=parts[5][:-4],unquote(parts[4])
+                try:
+                    if len(seed)>200: raise ValueError('Seed is too long (maximum 200 characters)')
+                    state=store.browser_state(collection,token,seed)
+                    encoded=json.dumps(state).replace('<','\\u003c')
+                    html=(Path(__file__).parent/'web.html').read_text().replace('__MENU_STATE__',encoded)
+                    self.send_body(html.encode(),'text/html; charset=utf-8')
+                except KeyError: self.send_body(b'Unknown menu page','text/plain',404)
+                except ValueError as exc: self.send_body(str(exc).encode(),'text/plain',400)
                 return
             legacy = re.fullmatch(r'/count/gifmenu/([0-9a-g]{32})/(?:p|b|v[23]/[^/]+)\.gif', urlsplit(self.path).path)
             if legacy:

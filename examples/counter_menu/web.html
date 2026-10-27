@@ -26,6 +26,7 @@
 <div class="notice">Meters take their reading from the number in the URL. Time counters tick live here; their GIFs capture the elapsed time when fetched; their artwork loops. Change the seed to refresh a cached Discord GIF.</div>
 <div><label for="seed">URL seed</label><div class="seedrow"><input id="seed" value="start" maxlength="200" aria-describedby="seedHelp"><button id="seedButton">Apply seed</button></div><p id="seedHelp" class="hint">Any label, such as “round two”. Changing it does not reset the timer.</p><a id="gifMenu" class="small">Open the Discord GIF menu</a></div></section></div>
 <section><div class="sectionhead"><div><h2>Saved GIFs</h2><p class="sub small">Find a meter or counter, favourite it, or restart a timer.</p></div><div class="row"><input id="search" type="search" placeholder="Search saved GIFs" aria-label="Search saved GIFs"><button id="favs" aria-pressed="false">☆ Favourites</button></div></div><div id="gallery" class="gallery"></div><p id="empty" class="empty" hidden>No saved GIFs match. Create one above.</p></section></main>
+<script id="menuState" type="application/json">__MENU_STATE__</script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id),alias=location.pathname.split('/')[3],api='/count/api/'+alias,form=$('creator');
@@ -34,6 +35,8 @@ const units={days:86400,hours:3600,minutes:60,seconds:1,milliseconds:.001,micros
 const fields=['subject','unit','value','theme','mode','note','star'];
 const seedPath=s=>encodeURIComponent(s||'start').replaceAll('~','%7E');
 let pathParts=location.pathname.split('/');if(pathParts.length===7)$('seed').value=decodeURIComponent(pathParts[5]);
+const menuToken=pathParts.length===7?pathParts[6].replace(/\.gif$/,''):'~';
+const initialState=JSON.parse($('menuState').textContent);
 function isMeter(item){return item.config.module==='meter';}
 function moduleUI(){const meter=$('module').value==='meter';$('counterFields').hidden=meter;$('meterFields').hidden=!meter;$('creatorTitle').textContent=meter?'Measure anything.':'Time since…';$('subjectLabel').textContent=meter?'Meter title':'What happened?';$('valueLabel').textContent=meter?'Default reading':'Initial offset / fixed value';$('value').pattern=(meter?'-?':'')+'[0-9]{1,12}(\\.[0-9]{1,6})?';$('formHint').textContent=meter?'The finished GIF URL contains the reading. Change that number to update the meter.':'Type normal spaces. Counting starts when you save. Reset always starts at zero.';}
 function config(){const c=Object.fromEntries(fields.map(k=>[k,$(k).value]));if($('module').value==='meter')Object.assign(c,{module:'meter',mode:'static',unit:$('meterUnit').value,...Object.fromEntries(['meter_style','minimum','maximum'].map(k=>[k,$(k).value]))});return c;}
@@ -41,7 +44,7 @@ function fill(c){$('module').value=c.module==='meter'?'meter':'counter';for(cons
 function status(text){$('status').textContent=text;}
 async function request(payload){const r=await fetch(api,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,key:crypto.randomUUID()})});if(!r.ok){let e=await r.json();throw Error(e.error||'Request failed');}return payload.action==='preview'?r.blob():r.json();}
 function gifUrl(item,seed=$('seed').value){return (isMeter(item)?'/count/m/'+item.id+'/'+encodeURIComponent(item.config.value):'/count/g/'+item.id)+'/'+seedPath(seed)+(isMeter(item)?'':'-'+item.revision)+'.gif';}
-function menuLink(){const link=location.origin+'/count/gifmenu/'+alias+'/v2/'+seedPath($('seed').value)+'/~.gif';$('gifMenu').href=link+'?format=gif';return link;}
+function menuLink(){const link=location.origin+'/count/gifmenu/'+alias+'/v2/'+seedPath($('seed').value)+'/'+menuToken+'.gif';$('gifMenu').href=link+'?format=gif';return link;}
 async function preview(){const n=++seq;$('previewButton').disabled=true;status('Rendering preview…');try{const blob=await request({action:'preview',config:config()});if(n!==seq)return;if(previewObject)URL.revokeObjectURL(previewObject);previewObject=URL.createObjectURL(blob);$('preview').src=previewObject;active=null;$('savedControls').hidden=true;$('previewTitle').textContent='Your preview';$('previewInfo').textContent=$('module').value==='meter'?'Not saved yet. The finished URL controls the reading.':'Not saved yet. The timer starts when you create it.';$('live').textContent='';status('Preview ready.');}catch(e){status(e.message);}finally{$('previewButton').disabled=false;}}
 function show(item){active=item;$('preview').src=gifUrl(item);$('previewTitle').textContent=(isMeter(item)?'':'Time since ')+item.config.subject;$('previewInfo').textContent=isMeter(item)?'Change the reading below or edit the number in the GIF URL.':item.config.mode==='counting'?'Counting from creation or the last reset.':'Static number, animated stars and clock.';$('savedControls').hidden=false;$('meterReading').hidden=!isMeter(item);$('reset').hidden=isMeter(item);if(isMeter(item)){$('urlValue').value=item.config.value;$('urlValue').min=item.config.minimum;$('urlValue').max=item.config.maximum;}$('share').value=location.origin+gifUrl(item);$('download').href=gifUrl(item);$('favourite').textContent=item.favourite?'★ Favourited':'☆ Favourite';tick();}
 function valueFor(item){if(item.config.mode!=='counting'||item.started==null)return item.config.value;const elapsed=Math.max(0,Date.now()/1000+serverDelta-item.started);return (Number(item.offset)+elapsed/units[item.config.unit]).toFixed(['days','hours'].includes(item.config.unit)?4:2).replace(/\.?0+$/,'');}
@@ -60,5 +63,5 @@ $('seedButton').onclick=()=>{menuLink();history.replaceState(null,'',menuLink())
 $('refresh').onclick=()=>{$('seed').value='refresh-'+Date.now();menuLink();if(active)show(active);};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('share').value);status('GIF link copied.');}catch{ $('share').select();status('Select and copy the link above.');}};
 let searchTimer;$('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>load().catch(e=>status(e.message)),200);};$('favs').onclick=()=>{$('favs').setAttribute('aria-pressed',$('favs').getAttribute('aria-pressed')!=='true');load().catch(e=>status(e.message));};
-setInterval(tick,1000);load().then(()=>{fill(defaults);preview();}).catch(e=>status(e.message));
+setInterval(tick,1000);load().then(()=>{fill(initialState.config||defaults);$('preset').value=$('module').value==='meter'?'meter':(presets[config().unit]?config().unit:'days');if(initialState.item)show(initialState.item);else preview();}).catch(e=>status(e.message));
 </script></html>

@@ -7,9 +7,10 @@ from PIL import Image, ImageDraw
 from render import THEMES, font, fit_text
 
 STYLES = ('thermometer', 'ruler', 'progress')
+LEGACY_NOTE = 'An extremely scientific measurement. Change the number in the GIF URL to update it.'
 DEFAULTS = dict(module='meter', meter_style='thermometer', minimum='0', maximum='100',
     mode='static', subject='horny meter', unit='%', value='75', theme='purple',
-    note='An extremely scientific measurement. Change the number in the GIF URL to update it.',
+    note='An extremely scientific measurement.',
     star='PEER REVIEWED')
 
 def number(value):
@@ -30,6 +31,7 @@ def validate_meter(config):
     if config['meter_style'] not in STYLES: raise ValueError('Unknown meter style')
     if config['mode'] != 'static': raise ValueError('Meters use the value in their URL')
     config = dict(config, minimum=number(config['minimum']), maximum=number(config['maximum']))
+    if config['note'] == LEGACY_NOTE: config['note'] = DEFAULTS['note']
     if Decimal(config['minimum']) >= Decimal(config['maximum']):
         raise ValueError('Meter maximum must be greater than its minimum')
     return reading(config, config['value'])
@@ -46,7 +48,8 @@ def meter_frame(config, phase=0):
     colour = '#cf254e'
     d.rounded_rectangle((680,218,1110,565), radius=12, fill=paper, outline=edge, width=4)
     d.text((706,240), 'TECHNICAL NOTE', font=font(22,True), fill=edge)
-    fit_text(d, config['note'], (706,284,378,163), 25)
+    note = DEFAULTS['note'] if config['note'] == LEGACY_NOTE else config['note']
+    fit_text(d, note, (706,284,378,163), 25)
     fit_text(d, config['star'], (706,476,378,60), 23, bold=True, centered=True)
     fit_text(d, config['value'] + (' ' + config['unit'] if config['unit'] else ''),
              (95,177,520,90), 67, bold=True, centered=True)
@@ -95,7 +98,6 @@ def meter_frame(config, phase=0):
             r=26 if i%2==0 else 12
             points.append((cx+r*cos(angle),cy+r*sin(angle)))
         d.polygon(points,fill=accent,outline=edge,width=3)
-    d.text((690,615),'VALUE SET BY THE URL.',font=font(18,True),fill=edge)
     return image
 
 def render_meter(config, animated=False):

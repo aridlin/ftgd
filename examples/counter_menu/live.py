@@ -55,6 +55,9 @@ class LiveStore:
                    (self.clock(),'0',json.dumps(config),gif,ident,collection))
 
     def saved_body(self, db, row, seed=None):
+        config=json.loads(row['config'])
+        if config.get('module')=='meter':
+            return self.meter_body(db,row,config['value'],seed or 'default')
         # Old/static files remain byte-identical until explicitly reset.
         if json.loads(row['config']).get('mode','static') != 'counting':
             return bytes(row['gif'])
@@ -73,7 +76,7 @@ class LiveStore:
         config=json.loads(row['config'])
         if config.get('module')!='meter': raise KeyError('Unknown meter')
         config=reading(config,value)
-        token=f"meter:{row['id']}:{row['revision']}"
+        token=f"meter:{row['id']}:{row['revision']}:art-v2"
         cache_key=config['value']+'/'+seed
         cached=db.execute('SELECT body FROM snapshots WHERE collection=? AND token=? AND seed=?',
                           (row['collection'],token,cache_key)).fetchone()

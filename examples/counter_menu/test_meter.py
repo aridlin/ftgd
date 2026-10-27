@@ -10,7 +10,7 @@ import json
 import unittest
 from PIL import Image, ImageChops
 from server import Store, DEFAULTS, validate, handler_for
-from meter import DEFAULTS as METER, STYLES
+from meter import DEFAULTS as METER, STYLES, LEGACY_NOTE
 from render import render_counter
 
 
@@ -114,6 +114,44 @@ class MeterTests(unittest.TestCase):
                 self.assertEqual(error.exception.code,code)
                 error.exception.close()
         finally:server.shutdown();server.server_close();thread.join()
+
+    def test_browser_f_command_bootstraps_meter_and_preserves_edits(self):
+        server=ThreadingHTTPServer(('127.0.0.1',0),handler_for(self.store))
+        thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+        origin='http://127.0.0.1:'+str(server.server_port)
+        root=self.store.url(self.collection).replace(self.store.base_url,origin)
+        def state(url):
+            with urlopen(Request(url,headers={'Accept':'text/html'})) as response:
+                html=response.read().decode()
+            raw=html.split('<script id="menuState" type="application/json">')[1].split('</script>')[0]
+            return json.loads(raw),html
+        try:
+            # Even a collection previously visited only as HTML can use f~.
+            config,html=state(root.replace('/~.gif','/f~.gif'))
+            self.assertEqual(config['config']['module'],'meter')
+            self.assertIn('fill(initialState.config||defaults)',html)
+            edited,_=state(root.replace('/~.gif','/f-~.subject=bread_meter.gif'))
+            self.assertEqual(edited['config']['subject'],'bread meter')
+            self.assertEqual(edited['config']['module'],'meter')
+            with self.store.connect() as db:
+                token=self.store.node(db,self.collection,'settings',dict(METER,subject='</script><script>bad</script>'))
+            escaped,html=state(root.replace('/~.gif','/'+token+'.gif'))
+            self.assertEqual(escaped['config']['subject'],'</script><script>bad</script>')
+            self.assertNotIn('</script><script>bad</script>',html)
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def test_old_meter_artwork_refreshes_without_instructions(self):
+        item=self.create()
+        with self.store.connect() as db:
+            db.execute('UPDATE saved SET config=?,gif=? WHERE id=?',
+                       (json.dumps(dict(METER,note=LEGACY_NOTE)),b'old-meter-with-footer',item['id']))
+            db.execute('INSERT INTO snapshots VALUES(?,?,?,?)',
+                       (self.collection,f"meter:{item['id']}:0",'75/fresh',b'old-cached-footer'))
+        expected=render_counter(METER,animated=True)
+        self.assertEqual(self.store.get(item['gif']),expected)
+        self.assertEqual(self.store.get('/count/g/'+item['id']+'.gif'),expected)
+        self.assertEqual(self.store.get('/count/gifmenu/'+self.collection+'/raw-'+item['id']+'.gif'),expected)
+        self.assertEqual(validate(dict(METER,note='my custom note'))['note'],'my custom note')
 
 
 if __name__=='__main__':unittest.main()
