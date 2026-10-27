@@ -117,6 +117,9 @@ def counter_frame(config, fried=True, phase=0):
 
 def render_counter(config, fried=True, animated=False):
     with RENDER_SLOTS:
+        if config.get('module') == 'meter':
+            from meter import render_meter
+            return render_meter(config, animated)
         return _render_counter(config, fried, animated)
 
 def _render_counter(config, fried=True, animated=False):

@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlsplit, quote, parse_qs
 
 from render import render_counter, THEMES, render_menu_image
 from live import LiveStore, current_config
+from meter import DEFAULTS as METER_DEFAULTS, STYLES, validate_meter
 
 ROOT = Path(__file__).resolve().parents[2]
 UNITS = ('days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds')
@@ -38,20 +39,22 @@ def validate(config):
     config = dict(config)
     config.setdefault('subject', DEFAULTS['subject'])
     config.setdefault('mode', 'static')
-    if config['mode'] not in ('static','counting'): raise ValueError('Choose counting or static mode')
-    if set(config) != set(DEFAULTS):
-        raise ValueError('Invalid counter fields')
-    if config['unit'] not in UNITS or config['theme'] not in THEMES:
+    meter = config.get('module') == 'meter'
+    if meter:
+        config = validate_meter(config)
+    elif config['mode'] not in ('static','counting'): raise ValueError('Choose counting or static mode')
+    elif set(config) != set(DEFAULTS): raise ValueError('Invalid counter fields')
+    if (not meter and config['unit'] not in UNITS) or config['theme'] not in THEMES:
         raise ValueError('Unknown unit or theme')
     value = str(config['value'])
-    if not re.fullmatch(r'\d{1,12}(?:\.\d{1,6})?', value):
+    if not meter and not re.fullmatch(r'\d{1,12}(?:\.\d{1,6})?', value):
         raise ValueError('Use a nonnegative number: up to 12 digits and 6 decimals')
     try:
         if not Decimal(value).is_finite():
             raise ValueError('Invalid value')
     except InvalidOperation:
         raise ValueError('Invalid value') from None
-    for field, limit in (('note', 180), ('star', 32), ('subject', 80)):
+    for field, limit in (('note', 180), ('star', 32), ('subject', 80)) + ((('unit',16),) if meter else ()):
         text = config[field]
         if not isinstance(text, str) or len(text) > limit or any(ord(c) < 32 or ord(c) == 127 for c in text):
             raise ValueError(f'{field}: maximum {limit} characters, no control characters')
@@ -62,7 +65,7 @@ def validate(config):
 class Store(LiveStore):
     def __init__(self, path, base_url, renderer=None, clock=None):
         self.clock = clock or time.time
-        self.defaults, self.presets = DEFAULTS, PRESETS
+        self.defaults, self.presets = DEFAULTS, dict(PRESETS, meter=METER_DEFAULTS)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.base_url = base_url.rstrip('/')
@@ -123,7 +126,7 @@ class Store(LiveStore):
     def input_page(self, db, collection, token):
         # Inputs follow the first ~. Navigation always edits that first ~,
         # even when arbitrary entered text contains literal tildes.
-        match = re.fullmatch(r'([^~]*-)~\.(value|note|star|subject)=(.*?)(\.(?:value|note|star|subject)=.*|$)', token)
+        match = re.fullmatch(r'([^~]*-)~\.(value|note|star|subject|minimum|maximum|unit)=(.*?)(\.(?:value|note|star|subject|minimum|maximum|unit)=.*|$)', token)
         if not match:
             raise ValueError('Use s/~/-~.subject=TEXT (or value, note, star). Encode dots as %2E.')
         prefix, field, value, remaining = match.groups()
@@ -133,14 +136,18 @@ class Store(LiveStore):
         if old is None:
             raise KeyError('Unknown source page')
         config = json.loads(old['config'])
-        config[field] = '' if value == 'EMPTY' and field != 'value' else value.replace('_', ' ')
+        if field in ('minimum','maximum','unit') and config.get('module') != 'meter':
+            raise ValueError('This field is only available for meters')
+        config[field] = '' if value == 'EMPTY' and field in ('note','star','unit') else value.replace('_', ' ')
         config = validate(config)
-        self.node(db, collection, 'settings' if field in ('value', 'subject') else 'notes', config, ident=token)
+        self.node(db, collection, 'notes' if field in ('note','star') else 'settings', config, ident=token)
         return db.execute('SELECT * FROM pages_live WHERE collection=? AND id=?', (collection, token)).fetchone()
 
     def page(self, collection, token, seed="start"):
         if not re.fullmatch('[0-9a-f]{32}', collection) or len(token) > 4000:
             raise ValueError('Invalid menu address')
+        # Refresh menu presentation after upgrades, without replaying saved actions.
+        seed = 'meters-v1:' + seed
         with self.connect() as db:
             # Actions, their result GIF and all destination tokens commit together.
             # Discord can fetch the same URL many times without saving duplicates.
@@ -241,8 +248,32 @@ class Store(LiveStore):
         def custom(field, placeholder):
             text(f's/~/-~.{field}={placeholder}')
         def config_line():
-            text(f"{config['value']} {config['unit']} since {config['subject']} | {config['theme']} | {config.get('mode','static')}")
-        if screen == 'settings':
+            if config.get('module') == 'meter':
+                text(f"{config['subject']} | {config['value']} {config['unit']} | {config['meter_style']} | {config['minimum']} to {config['maximum']}")
+            else:
+                text(f"{config['value']} {config['unit']} since {config['subject']} | {config['theme']} | {config.get('mode','static')}")
+        if screen == 'settings' and config.get('module') == 'meter':
+            heading('1 / 3  •  METER SETTINGS')
+            config_line()
+            panel('STYLE & COLOUR')
+            for style in STYLES:
+                link(style.upper(), 'settings', dict(config,meter_style=style))
+            for theme in THEMES:
+                if theme != config['theme']: link('THEME '+theme,'settings',dict(config,theme=theme))
+            link('TIME COUNTER MODULE','settings',dict(DEFAULTS))
+            panel('TITLE, RANGE & READING')
+            custom('subject','TEXT')
+            custom('value','NUMBER')
+            custom('minimum','NUMBER')
+            custom('maximum','NUMBER')
+            custom('unit','TEXT')
+            text('Value must stay inside the range. EMPTY clears the unit.')
+            panel('NEXT & COLLECTION')
+            text('Change the number in the finished GIF URL to change the reading.')
+            link('NEXT: NOTES','notes')
+            link('SAVED GIFS','library')
+            link('FAVOURITES','favourites')
+        elif screen == 'settings':
             heading('1 / 3  •  COUNTER SETTINGS')
             config_line()
             panel('PRESETS & COLOUR')
@@ -267,6 +298,7 @@ class Store(LiveStore):
             link('NEXT: NOTES', 'notes')
             link('SAVED GIFS', 'library')
             link('FAVOURITES', 'favourites')
+            link('METER MODULE', 'settings', dict(METER_DEFAULTS))
         elif screen == 'notes':
             heading('2 / 3  •  NOTES')
             config_line()
@@ -286,8 +318,11 @@ class Store(LiveStore):
             panel('YOUR GIF')
             lines.append(('I', json.dumps(config)))
             panel('READY TO SAVE')
-            text('Stars and clock animate in both modes.')
-            text('Counting starts on save. Change the URL seed to refresh the elapsed time.' if config['mode']=='counting' else 'Static mode keeps the chosen number fixed.')
+            if config.get('module') == 'meter':
+                text('Animated sparkles. The value comes from one segment of the finished URL.')
+            else:
+                text('Stars and clock animate in both modes.')
+                text('Counting starts on save. Change the URL seed to refresh the elapsed time.' if config['mode']=='counting' else 'Static mode keeps the chosen number fixed.')
             link('CREATE AND SAVE GIF', 'saved', act=dict(kind='save'))
             link('BACK: NOTES', 'notes')
             link('BACK: SETTINGS', 'settings')
@@ -305,7 +340,7 @@ class Store(LiveStore):
                 item = current_config(row,self.clock())
                 if rows.index(row) == 3:
                     panel('MORE GIFS')
-                label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} since {item.get('subject', DEFAULTS['subject'])}"
+                label = f"{'★ ' if row['favourite'] else ''}{item['value']} {item['unit']} {'·' if item.get('module')=='meter' else 'since'} {item.get('subject', DEFAULTS['subject'])}"
                 link(label, 'saved', validate(json.loads(row['config'])), dict(kind='view', id=row['id']))
             panel('BROWSE & CREATE')
             if offset:
@@ -323,7 +358,8 @@ class Store(LiveStore):
             config_line()
             panel('SHARE YOUR GIF')
             text('Permanent GIF link:')
-            text(f"{self.base_url}/count/g/{row['id']}/fresh.gif")
+            text(self.item(row)['gif'] if config.get('module')=='meter' else f"{self.base_url}/count/g/{row['id']}/fresh.gif")
+            if config.get('module')=='meter': text('Edit /'+config['value']+'/ in that URL to set the reading. The template stays unchanged.')
             link('SHOW THE GIF', 'raw', act=dict(kind='view', id=row['id']))
             text('Open that GIF in Discord and use its star to favourite it there.')
             panel('SAVE & ORGANISE')
@@ -331,8 +367,9 @@ class Store(LiveStore):
                  act=dict(kind='favourite', id=row['id'], value=not row['favourite']))
             link('SAVED GIFS', 'library')
             link('FAVOURITES', 'favourites')
-            link('RESET TIME TO ZERO', 'saved', act=dict(kind='reset',id=row['id']))
-            text('Reset starts now and removes the original offset.')
+            if config.get('module')!='meter':
+                link('RESET TIME TO ZERO', 'saved', act=dict(kind='reset',id=row['id']))
+                text('Reset starts now and removes the original offset.')
             link('MAKE A VARIATION', 'settings')
         else:
             raise ValueError('Unknown screen')
@@ -343,6 +380,15 @@ class Store(LiveStore):
         parts = urlsplit(path).path.strip('/').split('/')
         if not parts or parts.pop(0) != 'count':
             raise KeyError('Unknown route')
+        if parts and parts[0]=='m':
+            if len(parts)!=4 or not re.fullmatch('[0-9a-f]{32}',parts[1]) or not parts[3].endswith('.gif'):
+                raise KeyError('Unknown meter URL')
+            seed=unquote(parts[3][:-4])
+            if len(seed)>200: raise ValueError('Seed is too long (maximum 200 characters)')
+            with self.connect() as db:
+                row=db.execute('SELECT * FROM saved WHERE id=?',(parts[1],)).fetchone()
+                if row is None: raise KeyError('Unknown meter')
+                return self.meter_body(db,row,unquote(parts[2]),seed)
         if parts and parts[0]=='g' and len(parts) in (2,3):
             ident=parts[1][:-4] if len(parts)==2 and parts[1].endswith('.gif') else parts[1]
             if not re.fullmatch('[0-9a-f]{32}',ident): raise KeyError('Unknown GIF')

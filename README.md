@@ -54,7 +54,9 @@ int main() {
 [`examples/counter_menu`](examples/counter_menu/README.md) is a complete hosted
 GIF menu plus browser creator: configuration screens, animated counter previews,
 persistent saved GIFs, elapsed-time clocks, resets, search and favourites. It uses Discord's `s/old/new` edits and stable image URLs, with
-days/hours/microseconds presets and editable counter subjects. Build with `make counter-menu`; run its tests
+days/hours/microseconds presets and editable counter subjects. Its meter module
+adds thermometer, ruler and progress-bar GIFs whose readings come from a single
+URL segment (`/count/m/<id>/75/fresh.gif`). Build with `make counter-menu`; run its tests
 with `make counter-test`.
 
 ```bash

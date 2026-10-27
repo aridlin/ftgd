@@ -5,6 +5,7 @@ import time
 from decimal import Decimal, ROUND_DOWN
 from urllib.parse import quote
 from render import render_counter
+from meter import reading
 
 UNIT_SECONDS = {'days':86400, 'hours':3600, 'minutes':60, 'seconds':1,
                 'milliseconds':.001, 'microseconds':.000001}
@@ -47,6 +48,7 @@ class LiveStore:
         row = db.execute('SELECT * FROM saved WHERE collection=? AND id=?',(collection,ident)).fetchone()
         if row is None: raise KeyError('Unknown saved GIF')
         config = json.loads(row['config'])
+        if config.get('module')=='meter': raise ValueError('Meters have no timer; edit the value in the GIF URL')
         config['value']='0'
         gif = render_counter(config, animated=True)
         db.execute('UPDATE saved SET started=?,offset=?,config=?,gif=?,revision=revision+1,animated=1 WHERE id=? AND collection=?',
@@ -67,10 +69,30 @@ class LiveStore:
             db.execute('DELETE FROM snapshots WHERE collection=? AND token=? AND rowid NOT IN (SELECT rowid FROM snapshots WHERE collection=? AND token=? ORDER BY rowid DESC LIMIT 64)',(row['collection'],key,row['collection'],key))
         return body
 
+    def meter_body(self, db, row, value, seed):
+        config=json.loads(row['config'])
+        if config.get('module')!='meter': raise KeyError('Unknown meter')
+        config=reading(config,value)
+        token=f"meter:{row['id']}:{row['revision']}"
+        cache_key=config['value']+'/'+seed
+        cached=db.execute('SELECT body FROM snapshots WHERE collection=? AND token=? AND seed=?',
+                          (row['collection'],token,cache_key)).fetchone()
+        if cached: return bytes(cached['body'])
+        body=render_counter(config,animated=True)
+        db.execute('INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?)',(row['collection'],token,cache_key,body))
+        db.execute('DELETE FROM snapshots WHERE collection=? AND token=? AND rowid NOT IN (SELECT rowid FROM snapshots WHERE collection=? AND token=? ORDER BY rowid DESC LIMIT 64)',
+                   (row['collection'],token,row['collection'],token))
+        return body
+
     def item(self, row):
-        return dict(id=row['id'],config=current_config(row,self.clock()), favourite=bool(row['favourite']),
+        config=current_config(row,self.clock())
+        result=dict(id=row['id'],config=config, favourite=bool(row['favourite']),
                     started=row['started'],offset=row['offset'],revision=row['revision'],animated=bool(row['animated']),
                     gif=f"{self.base_url}/count/g/{row['id']}.gif")
+        if config.get('module')=='meter':
+            result['gif']=f"{self.base_url}/count/m/{row['id']}/{config['value']}/fresh.gif"
+            result['gif_template']=f"{self.base_url}/count/m/{row['id']}/{{value}}/{{seed}}.gif"
+        return result
 
     def api_get(self, collection, query='', favourites=False):
         with self.connect() as db:
