@@ -1,4 +1,33 @@
-# Counter studio + Discord GIF menus
+# Counter and meter studio + Discord GIF menus
+
+## Meters: reading in the URL
+
+Choose **Meter** in the website's Module selector, or **METER MODULE** in the
+Discord GIF menu. Styles: thermometer, ruler, progress bar. The default is a
+0–100% “horny meter”; title, range, reading, suffix, theme and notes are editable.
+Meters have animated sparkles but their readings do not count up.
+
+The finished link is:
+
+```text
+/count/m/<saved-id>/75/<seed>.gif
+```
+
+Change just `/75/` to `/20/` for a reading of 20. Different value URLs can coexist
+and do not modify the template, its favourite status, or any timer. The website's
+**Reading in the URL** control does the same thing and updates the copyable link.
+Saved meters appear in the same searchable/favouritable collection as counters.
+
+Values and range endpoints support signed numbers with up to 12 integer digits
+and 6 decimals. The maximum must exceed the minimum; values outside the range
+return HTTP 400. The unit is an optional suffix (up to 16 characters). GIF menu
+edits also support `.minimum=`, `.maximum=` and `.unit=`; `EMPTY` clears the unit.
+URL-encode literal dots before any reserved field name when entering free text.
+Raw meter URLs always return GIF bytes, even in a browser. Up to 64 value/seed
+renders are cached per saved template revision. Changing a value creates a fresh
+Discord image URL; change the seed as well if you need to bypass a client cache.
+
+## Time counters
 
 A browser creator and FTGD menu app that save animated counter GIFs. Stars and
 clock hands animate in both modes:
