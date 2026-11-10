@@ -1,0 +1,26 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "ftgd",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "build/basic",
+      "size": 100288,
+      "sha256": "8bf3496c42d11b0f85f3c03308d3722f0efc6fb22b26bb5945a1ac191d1c8550"
+    },
+    {
+      "path": "build/counter-menu",
+      "size": 95752,
+      "sha256": "55b9eee61b04a2d23183eae42c983e8bb6eb5e4ac4a32570ac7d9bdab9c65a46"
+    }
+  ],
+  "checks": [
+    {
+      "job": "ftgd",
+      "passed": true,
+      "command": "make CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG -Wall -Wextra\" all test counter-menu -j2"
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}
